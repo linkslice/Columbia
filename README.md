@@ -115,6 +115,14 @@ make
 ./Columbia
 ```
 
+> **Status:** every source compiles cleanly (no warnings) with Haiku's own
+> GCC 13.3 cross-compiler against current Haiku headers, and the core runs
+> its full test suite. The app has not yet been linked and run on a Haiku
+> machine, so the first `make && ./Columbia` there is its maiden voyage.
+> `make preview` renders the custom DSKY and trajectory views to PNGs
+> through a small Cairo stand-in, and `tools/haiku_syntax_check.sh` type-checks
+> the UI against a Haiku header tree from any Linux box.
+
 The headless tests run on any POSIX system with a C++17 compiler:
 
 ```sh

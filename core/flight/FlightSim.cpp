@@ -44,12 +44,14 @@ FindPad(const std::string& name)
 	return kPads[0];
 }
 
+
+// Engines that make coasting impossible (attitude-hold RCS pulses don't).
 bool
-AnyThrust(const Vehicle& v)
+MainThrust(const Vehicle& v)
 {
 	for (const Module& m : v.Modules())
 		for (const Thruster& t : m.thrusters)
-			if (t.on || t.failedOn || t.level > 0)
+			if (t.failedOn || ((t.on || t.level > 0) && t.kind == THRUSTER_MAIN))
 				return true;
 	return false;
 }
@@ -415,6 +417,8 @@ FlightSim::_PadLoadCMC(const Mat3& refsmmat)
 		}
 		run(1.0);
 	}
+	// The keying above ran the computer without the simulation's clock.
+	gnc::SetComputerClock(c, fGET);
 	fCMCDSKY.Sync(c);
 }
 
@@ -460,6 +464,7 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 	fLMPGNCS->imu.Align(refsmmat);
 	KeySequence(c, "V37E00E");
 	c.Run(1.0);
+	gnc::SetComputerClock(c, fGET);
 	fLGCDSKY.Sync(c);
 	fLGCPowered = true;
 	lmSystems.powered = true;
@@ -1309,13 +1314,15 @@ FlightSim::_CanCoast() const
 		|| fPhase == Phase::PoweredDescent || fPhase == Phase::LunarAscent
 		|| fPhase == Phase::Entry || fPhase == Phase::Lost)
 		return false;
-	if (AnyThrust(*fCSM) || (fLM && AnyThrust(*fLM)))
+	if (MainThrust(*fCSM) || (fLM && MainThrust(*fLM)))
 		return false;
 	if (fIU && (fIU->CurrentMode() == SaturnIU::Mode::TLI
 			|| (fIU->CurrentMode() == SaturnIU::Mode::TLIPrep
 				&& fGET > fIU->TLIIgnitionGET() - 400)))
 		return false;
 	if (fCSM->position.Length() < world::kREarth + 150000)
+		return false;
+	if (fGET >= lockstepFrom - 0.5)
 		return false;
 	if (fLM && !fLMDocked && !fLMLanded) {
 		if ((fLM->position - fCSM->position).Length() < 2000)
@@ -1365,6 +1372,8 @@ FlightSim::Run(double simSeconds)
 			break;
 		if (fWarp > fLockstepLimit && _CanCoast() && remaining > 1.0) {
 			double dt = std::min(remaining, kCoastStep);
+			if (lockstepFrom < 1e29)
+				dt = std::min(dt, std::max(kStep, lockstepFrom - 0.5 - fGET));
 			_Coast(dt);
 			remaining -= dt;
 		} else {
@@ -1399,7 +1408,7 @@ FlightSim::_Step(double dt)
 				v.attitude = Quat::FromMatrix(ef) * fPadAttitude;
 			}
 			// Engines can still start (liftoff from either body).
-			bool thrust = AnyThrust(v);
+			bool thrust = MainThrust(v);   // RCS pulses don't lift it off
 			if (!thrust || (&v == fCSM.get() && fOnPad && holdDown)) {
 				// Engines running up against the hold-down arms, or
 				// just the accelerometers feeling the ground.
@@ -1435,6 +1444,9 @@ FlightSim::_Step(double dt)
 			v.ambientPressure = 0;
 		}
 		v.Step(dt, [this](const Vec3& r, double j) { return _Gravity(r, j); });
+		// Julian dates don't survive millions of tiny increments: the
+		// simulation's own clock (seconds) is the reference.
+		v.jd = jd;
 	};
 
 	bool cmAlone = !fSMAttached;
@@ -1543,7 +1555,7 @@ FlightSim::_Contacts()
 				-1, 1)) / kDeg;
 			double lat, lon, rr;
 			fMoonScene->LatLon(fLM->position, &lat, &lon, &rr);
-			double slope = fTerrain.Slope(lat, lon) / kDeg;
+			double slope = fTerrain.Slope(lat, lon);   // degrees
 			char buf[200];
 			std::snprintf(buf, sizeof(buf), "Contact: %.1f ft/s down, %.1f ft/s"
 				" across, %.1f deg tilt, %.1f deg slope", -vz / 0.3048,

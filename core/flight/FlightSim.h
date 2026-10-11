@@ -186,6 +186,9 @@ public:
 	std::function<void(FlightSim&, double)> boosterGuidance;
 	// The Saturn's Instrument Unit (null once there's no S-IVB to fly).
 	SaturnIU* IU() { return fIU.get(); }
+	// Lockstep from this GET on (the crew has something to do then): long
+	// coasting steps stop short of it.
+	double lockstepFrom = 1e30;
 	// Hold-down arms keep the Saturn on the pad until released.
 	bool holdDown = true;
 	// Drops a spent booster stage (S-IC, S-II, S-IB) or the S-IVB part of

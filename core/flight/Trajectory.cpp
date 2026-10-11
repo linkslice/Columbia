@@ -694,4 +694,85 @@ Lambert(const Vec3& r1, const Vec3& r2, double tof, double mu,
 	return true;
 }
 
+
+State
+FiniteBurn(const State& s0, const Vec3& direction, double deltaV,
+	double thrust, double mass, double isp)
+{
+	Vec3 u = direction.Unit();
+	double ve = isp * 9.80665;
+	double tb = mass * ve / thrust * (1 - std::exp(-deltaV / ve));
+	// RK4 on gravity plus thrust, 1 s steps (the last one partial).
+	State s = s0;
+	double m = mass;
+	double t = 0;
+	auto acc = [&](const Vec3& r, double jd, double mm) {
+		return Gravity(r, jd) + u * (thrust / mm);
+	};
+	double mdot = thrust / ve;
+	while (t < tb - 1e-9) {
+		double h = std::min(1.0, tb - t);
+		double jd = s.jd;
+		Vec3 r = s.r, v = s.v;
+		Vec3 k1r = v, k1v = acc(r, jd, m);
+		Vec3 k2r = v + k1v * (h / 2), k2v = acc(r + k1r * (h / 2), jd + h / 2 / kDay,
+			m - mdot * h / 2);
+		Vec3 k3r = v + k2v * (h / 2), k3v = acc(r + k2r * (h / 2), jd + h / 2 / kDay,
+			m - mdot * h / 2);
+		Vec3 k4r = v + k3v * h, k4v = acc(r + k3r * h, jd + h / kDay, m - mdot * h);
+		s.r = r + (k1r + k2r * 2 + k3r * 2 + k4r) * (h / 6);
+		s.v = v + (k1v + k2v * 2 + k3v * 2 + k4v) * (h / 6);
+		s.jd = jd + h / kDay;
+		m -= mdot * h;
+		t += h;
+	}
+	return s;
+}
+
+
+bool
+FiniteEquivalent(const State& pre, double impulseJD, const Vec3& dv,
+	double thrust, double mass, double isp, double* tigJD, Vec3* dvFinite)
+{
+	double ve = isp * 9.80665;
+	double tb = mass * ve / thrust * (1 - std::exp(-dv.Length() / ve));
+	double tig = impulseJD - tb / 2 / kDay;
+	State atTig = Propagate(pre, (tig - pre.jd) * kDay);
+	State imp = Propagate(atTig, (impulseJD - tig) * kDay);
+	imp.v += dv;
+	// Match the impulsive trajectory's position a while after the burn.
+	double aimJD = tig + (tb + 1800) / kDay;
+	State aim = Propagate(imp, (aimJD - imp.jd) * kDay);
+	auto miss = [&](const Vec3& d) {
+		State end = FiniteBurn(atTig, d, d.Length(), thrust, mass, isp);
+		State there = Propagate(end, (aimJD - end.jd) * kDay);
+		return there.r - aim.r;
+	};
+	Vec3 d = dv;
+	for (int it = 0; it < 8; it++) {
+		Vec3 e = miss(d);
+		if (e.Length() < 50)
+			break;
+		// Jacobian by finite differences.
+		Mat3 J;
+		double h = std::max(0.05, d.Length() * 1e-4);
+		Vec3 cols[3];
+		for (int k = 0; k < 3; k++) {
+			Vec3 dd = d;
+			(&dd.x)[k] += h;
+			cols[k] = (miss(dd) - e) / h;
+		}
+		J = Mat3::Columns(cols[0], cols[1], cols[2]);
+		Vec3 step = J.Inverse() * e;
+		if (!(step.Length() < 1e6))
+			return false;
+		d = d - step;
+	}
+	if (miss(d).Length() > 5000)
+		return false;
+	*tigJD = tig;
+	*dvFinite = d;
+	return true;
+}
+
 }  // namespace flight

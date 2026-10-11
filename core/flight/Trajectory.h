@@ -96,6 +96,17 @@ bool TargetMCCEarth(const State& s, double gamma, Vec3* deltaV);
 bool Lambert(const Vec3& r1, const Vec3& r2, double tof, double mu,
 	const Vec3& normal, Vec3* v1, Vec3* v2 = nullptr);
 
+// A constant-attitude burn: thrust along `direction` (inertial) from
+// s until the accelerometers have counted `deltaV` (the way the CMC's VG
+// cuts off). Returns the state at cutoff.
+State FiniteBurn(const State& s, const Vec3& direction, double deltaV,
+	double thrust, double mass, double isp);
+// The finite burn that does what an impulsive delta-V `dv` at impulseJD
+// would: ignition time and the sensed delta-V vector (constant inertial
+// direction). `pre` is any state before the burn.
+bool FiniteEquivalent(const State& pre, double impulseJD, const Vec3& dv,
+	double thrust, double mass, double isp, double* tigJD, Vec3* dvFinite);
+
 // LVLH components (x along-track, y -orbit normal, z toward the body) of
 // an inertial vector at a body-relative state.
 Vec3 ToLVLH(const Vec3& rRel, const Vec3& vRel, const Vec3& inertial);

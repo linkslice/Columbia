@@ -42,6 +42,110 @@ ManeuverError(gnc::PadLoader& pad, agc::Computer& c)
 	return worst;
 }
 
+// P52 by uplink: a new REFSMMAT in the CMC and the platform torqued to it.
+void
+AlignCMC(FlightSim& f, const Mat3& refsmmat)
+{
+	gnc::PadLoader& pad = f.CMCPad();
+	pad.Vector("REFSMMAT", refsmmat.Row(0), -1);
+	Vec3 r1 = refsmmat.Row(1), r2 = refsmmat.Row(2);
+	double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
+	for (int i = 0; i < 6; i++) {
+		uint16_t hi, lo;
+		gnc::EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
+		pad.Octal("REFSMMAT", hi, 6 + 2 * i);
+		pad.Octal("REFSMMAT", lo, 7 + 2 * i);
+	}
+	gnc::SetFlag(pad, gnc::FLAG_REFSMFLG, true);
+	f.CMPGNCS().imu.Align(refsmmat);
+	// The RCS DAP holds the CDU angles it was given; after the platform
+	// moves, hold the attitude the spacecraft actually has.
+	Vec3 g = f.CMPGNCS().imu.Gimbals(f.CSMVehicle().attitude);
+	pad.Octal("THETADX", gnc::AngleToCDU(g.x));
+	pad.Octal("THETADY", gnc::AngleToCDU(g.y));
+	pad.Octal("THETADZ", gnc::AngleToCDU(g.z));
+}
+
+// P57 on the lunar surface, by its result: the platform realigned with X up
+// the local vertical and Z downrange in the CSM's orbit plane; then the
+// surface V48 (ascent stage, ascent masses) and a fresh CSM state vector
+// from the MSFN.
+void
+PrepareLGCForAscent(FlightSim& f)
+{
+	gnc::PadLoader& pad = *f.LGCPad();
+	Vehicle& lm = *f.LMVehicle();
+	const MoonScene& moon = f.Moon();
+	Vec3 mp = moon.MoonPosition(), mv = moon.MoonVelocity();
+	Vec3 up = moon.LocalVertical(lm.position);
+	Vec3 h = (f.CSMVehicle().position - mp).Cross(f.CSMVehicle().velocity - mv).Unit();
+	Vec3 downrange = h.Cross(up).Unit();
+	Mat3 refsmmat = Mat3::Rows(up, downrange.Cross(up), downrange);
+	pad.Vector("REFSMMAT", refsmmat.Row(0), -1);
+	Vec3 r1 = refsmmat.Row(1), r2 = refsmmat.Row(2);
+	double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
+	for (int i = 0; i < 6; i++) {
+		uint16_t hi, lo;
+		gnc::EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
+		pad.Octal("REFSMMAT", hi, 6 + 2 * i);
+		pad.Octal("REFSMMAT", lo, 7 + 2 * i);
+	}
+	gnc::SetFlag(pad, gnc::FLAG_REFSMFLG, true);
+	f.LMPGNCS()->imu.Align(refsmmat);
+
+	const Module* a = lm.FindModule("LM ascent stage");
+	double mass = a ? a->Mass() : lm.Mass();
+	pad.Double("MASS", mass, -16);
+	pad.Single("LEMMASS", mass, -16);
+	gnc::SetFlag(pad, gnc::FLAG_APSFLAG, true);
+	gnc::SetFlag(pad, gnc::FLAG_SURFFLAG, true);
+	// V48 R1: LM alone (CSMDOCKED clear).
+	pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~0100);
+
+	gnc::StateVector csm;
+	csm.position = f.CSMVehicle().position - mp;
+	csm.velocity = f.CSMVehicle().velocity - mv;
+	csm.agcTime = f.GET();
+	gnc::LoadStateVector(pad, csm, false);
+}
+
+// A MSFN state-vector uplink to the CMC as of now, about the body the CMC
+// would use. Returns false (and loads nothing) if not needed.
+gnc::StateVector
+UplinkCSMState(FlightSim& f)
+{
+	Vehicle& v = f.CSMVehicle();
+	bool moon = f.Situate(v).nearMoon;
+	gnc::StateVector sv;
+	sv.position = v.position - (moon ? f.Moon().MoonPosition() : Vec3());
+	sv.velocity = v.velocity - (moon ? f.Moon().MoonVelocity() : Vec3());
+	sv.agcTime = f.GET();
+	sv.moon = moon;
+	gnc::PadLoader& pad = f.CMCPad();
+	gnc::LoadStateVector(pad, sv, false);
+	gnc::SetFlag(pad, gnc::FLAG_MOONFLAG, moon);
+	return sv;
+}
+
+// Did the uplink take? The CMC's periodic integration, if it was under way,
+// stores its own (old) state over ours when it finishes; real uplinks were
+// checked the same way and sent again.
+bool
+UplinkTook(gnc::PadLoader& pad, const gnc::StateVector& sv, bool lm)
+{
+	if (gnc::GetFlag(pad, lm ? gnc::FLAG_LMOONFLG : gnc::FLAG_CMOONFLG) != sv.moon)
+		return false;
+	Vec3 r;
+	pad.ReadVector(lm ? "RRECTLEM" : "RRECTCSM", sv.moon ? -27 : -29, &r);
+	return (r - sv.position).Length() < 50e3;
+}
+
+bool
+UplinkTook(FlightSim& f, const gnc::StateVector& sv)
+{
+	return UplinkTook(f.CMCPad(), sv, false);
+}
+
 }  // namespace
 
 
@@ -92,6 +196,8 @@ DSKYDriver::Step(double dt)
 			fStable = 0;
 		}
 	}
+	if (State().oprErr && fQueue.empty() && fWait <= 0 && fStable > 1.5)
+		Type("R");      // clear an operator error before going on
 	if (fWantProgram >= 0 && fQueue.empty()) {
 		fSinceSelect += dt;
 		char want[16];
@@ -368,6 +474,7 @@ private:
 	Vec3 fDV;               // LVLH m/s
 	std::string fLabel;
 	int fState = 0;
+	gnc::StateVector fSV;
 	double fTimer = 0;
 	double fLastKey = -100;
 	double fLastManeuver = -1e9;
@@ -389,9 +496,6 @@ CSMBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			// the platform to the burn's "preferred" orientation (P52).
 			Vehicle& v = f.CSMVehicle();
 			bool moon = f.Situate(v).nearMoon;
-			Vec3 org = moon ? f.Moon().MoonPosition() : Vec3();
-			Vec3 orgV = moon ? f.Moon().MoonVelocity() : Vec3();
-			Vec3 r = v.position - org, vel = v.velocity - orgV;
 			State s{v.position, v.velocity, f.JulianDate()};
 			State atTig = Propagate(s, fTIG - get);
 			Vec3 rT = atTig.r - (moon ? MoonPos(atTig.jd) : Vec3());
@@ -410,24 +514,8 @@ CSMBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			y = (y - x * y.Dot(x)).Unit();
 			Mat3 refsmmat = Mat3::Rows(x, y, x.Cross(y));
 			gnc::PadLoader& pad = f.CMCPad();
-			gnc::StateVector sv;
-			sv.position = r;
-			sv.velocity = vel;
-			sv.agcTime = get;
-			sv.moon = moon;
-			gnc::LoadStateVector(pad, sv, false);
-			gnc::SetFlag(pad, gnc::FLAG_MOONFLAG, moon);
-			pad.Vector("REFSMMAT", refsmmat.Row(0), -1);
-			Vec3 r1 = refsmmat.Row(1), r2 = refsmmat.Row(2);
-			double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
-			for (int i = 0; i < 6; i++) {
-				uint16_t hi, lo;
-				gnc::EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
-				pad.Octal("REFSMMAT", hi, 6 + 2 * i);
-				pad.Octal("REFSMMAT", lo, 7 + 2 * i);
-			}
-			gnc::SetFlag(pad, gnc::FLAG_REFSMFLG, true);
-			pg.imu.Align(refsmmat);
+			fSV = UplinkCSMState(f);
+			AlignCMC(f, refsmmat);
 			// DAP configuration and masses.
 			bool docked = f.LMDocked();
 			double lmMass = 0;
@@ -442,14 +530,20 @@ CSMBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			pg.panel.scContCMC = true;
 			pg.panel.mode = gnc::CMPanel::MODE_AUTO;
 			c.Report(fLabel + ": state vector and REFSMMAT uplinked");
-			d.Type("V37E00E");
+			d.SelectProgram(0);
 			fState = 1;
 			fTimer = 0;
 			break;
 		}
 		case 1:   // V48: DAP data load
-			if (!d.Idle() || fTimer < 2)
+			if (!d.Ready() || fTimer < 2)
 				break;
+			if (!UplinkTook(f, fSV)) {
+				fSV = UplinkCSMState(f);
+				c.Report(fLabel + ": state vector uplink sent again");
+				fTimer = 0;
+				break;
+			}
 			d.Type("V48E");
 			fState = 2;
 			fTimer = 0;
@@ -464,7 +558,7 @@ CSMBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				fTimer = 0;
 				break;
 			}
-			if (fTimer > 2) {
+			if (fTimer > 2 && d.Ready()) {
 				d.Type("V46E");
 				fState = 3;
 				fTimer = 0;
@@ -502,6 +596,25 @@ CSMBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				break;
 			if (d.Flashing() && d.VerbNoun().substr(2) == "42") {
 				c.Report(fLabel + ": P30 " + d.Display());
+				if (std::getenv("P30DIAG")) {
+					Vec3 dvl;
+					double tig = 0;
+					f.CMCPad().ReadVector("DELVSLV", -7, &dvl);
+					f.CMCPad().ReadDouble("TIG", -28, &tig);
+					char b[160];
+					std::snprintf(b, sizeof(b), "P30DIAG TIG %.2f (want %.2f) DELVSLV %.2f %.2f %.2f"
+						" (want %.2f %.2f %.2f)", tig / 100, fTIG, dvl.x * 100, dvl.y * 100,
+						dvl.z * 100, fDV.x, fDV.y, fDV.z);
+					c.Report(b);
+					bool mf = gnc::GetFlag(f.CMCPad(), gnc::FLAG_MOONFLAG);
+					Vec3 rc;
+					f.CMCPad().ReadVector("RRECTCSM", mf ? -27 : -29, &rc);
+					Vec3 rm = f.CSMVehicle().position - f.Moon().MoonPosition();
+					std::snprintf(b, sizeof(b), "P30DIAG moonflag %d |RRECT| %.0f km; truth"
+						" from Moon %.0f km, from Earth %.0f km", mf, rc.Length() / 1000,
+						rm.Length() / 1000, f.CSMVehicle().position.Length() / 1000);
+					c.Report(b);
+				}
 				d.Type("P");
 				fState = 7;
 				fTimer = 0;
@@ -640,6 +753,61 @@ AutoCrew::ExternalDeltaV(FlightSim& f, double impulseGET, const Vec3& dv,
 }
 
 
+double
+AutoCrew::PhaseAngle(FlightSim& f, double get)
+{
+	Vehicle& csm = f.CSMVehicle();
+	State s{csm.position, csm.velocity, f.JulianDate()};
+	State c = Propagate(s, get - f.GET());
+	double jd = c.jd;
+	Vec3 rc = c.r - MoonPos(jd), vc = c.v - MoonVel(jd);
+	Vec3 rl;
+	if (f.LMLanded()) {
+		// The LM rides the Moon round: its position now, turned with the
+		// Moon to `get`.
+		Vec3 now = f.LMVehicle()->position - f.Moon().MoonPosition();
+		const double moonRate = 2 * M_PI / (27.321661 * 86400);
+		double turn = moonRate * (get - f.GET());
+		Vec3 axis = f.Moon().FixedToInertial().Column(2);
+		rl = now * std::cos(turn) + axis.Cross(now) * std::sin(turn)
+			+ axis * axis.Dot(now) * (1 - std::cos(turn));
+	} else {
+		State l{f.LMVehicle()->position, f.LMVehicle()->velocity, f.JulianDate()};
+		l = Propagate(l, get - f.GET());
+		rl = l.r - MoonPos(l.jd);
+	}
+	Vec3 h = rc.Cross(vc).Unit();
+	return std::atan2(h.Dot(rl.Cross(rc)), rl.Dot(rc)) / kDeg;
+}
+
+
+double
+AutoCrew::LiftoffTime(FlightSim& f, double earliest, double phase)
+{
+	Vehicle& csm = f.CSMVehicle();
+	State s{csm.position, csm.velocity, f.JulianDate()};
+	s = Propagate(s, earliest - f.GET());
+	Vec3 lm0 = f.LMVehicle()->position - f.Moon().MoonPosition();
+	Vec3 axis = f.Moon().FixedToInertial().Column(2);
+	const double moonRate = 2 * M_PI / (27.321661 * 86400);
+	const double step = 10;
+	double prev = 1e9;
+	for (double t = earliest; t < earliest + 3 * 7200; t += step) {
+		Vec3 rc = s.r - MoonPos(s.jd), vc = s.v - MoonVel(s.jd);
+		double turn = moonRate * (t - f.GET());
+		Vec3 rl = lm0 * std::cos(turn) + axis.Cross(lm0) * std::sin(turn)
+			+ axis * axis.Dot(lm0) * (1 - std::cos(turn));
+		Vec3 h = rc.Cross(vc).Unit();
+		double a = std::atan2(h.Dot(rl.Cross(rc)), rl.Dot(rc)) / kDeg;
+		if (prev < phase && a >= phase && a - prev < 10)
+			return t - step * (a - phase) / (a - prev);
+		prev = a;
+		s = Propagate(s, step);
+	}
+	return earliest;
+}
+
+
 std::unique_ptr<Procedure>
 AutoCrew::CSMBurn(double tig, const Vec3& dv, const std::string& label)
 {
@@ -664,6 +832,7 @@ private:
 	double fLat, fLon;
 	mutable double fWake = -1;
 	int fState = 0;
+	gnc::StateVector fSV;
 	double fTimer = 0;
 	double fLastKey = -100, fLastManeuver = -1e9;
 	bool fP61Loaded = false;
@@ -676,15 +845,14 @@ EntryProcedure::WakeGET(FlightSim& f) const
 	// Forty minutes before the entry interface.
 	if (fWake >= 0)
 		return fWake;
+	// Still far out: look again in ten minutes (not cached).
+	if (f.CSMVehicle().position.Length() > world::kREarth + 2.0e7)
+		return f.GET() + 600;
 	fWake = f.GET();
 	State s{f.CSMVehicle().position, f.CSMVehicle().velocity, f.JulianDate()};
-	if (f.CSMVehicle().position.Length() < world::kREarth + 2.0e7) {
-		Interface ei = EntryInterface(s, 4 * 3600);
-		if (ei.found)
-			fWake = f.GET() + (ei.jd - s.jd) * 86400 - 2400;
-		return fWake;
-	}
-	fWake = f.GET() + 600;
+	Interface ei = EntryInterface(s, 4 * 3600);
+	if (ei.found)
+		fWake = f.GET() + (ei.jd - s.jd) * 86400 - 2400;
 	return fWake;
 }
 
@@ -725,38 +893,28 @@ EntryProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			Vec3 smX = along, smZ = -eiHat, smY = smZ.Cross(smX);
 			Mat3 refsmmat = Mat3::Rows(smX, smY, smZ);
 			gnc::PadLoader& pad = f.CMCPad();
-			pad.Vector("REFSMMAT", refsmmat.Row(0), -1);
-			Vec3 r1 = refsmmat.Row(1), r2 = refsmmat.Row(2);
-			double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
-			for (int i = 0; i < 6; i++) {
-				uint16_t hi, lo;
-				gnc::EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
-				pad.Octal("REFSMMAT", hi, 6 + 2 * i);
-				pad.Octal("REFSMMAT", lo, 7 + 2 * i);
-			}
-			gnc::SetFlag(pad, gnc::FLAG_REFSMFLG, true);
-			pg.imu.Align(refsmmat);
-			gnc::StateVector sv;
-			sv.position = v.position;
-			sv.velocity = v.velocity;
-			sv.agcTime = get;
-			sv.moon = false;
-			gnc::LoadStateVector(pad, sv, false);
-			gnc::SetFlag(pad, gnc::FLAG_MOONFLAG, false);
+			AlignCMC(f, refsmmat);
+			fSV = UplinkCSMState(f);
 			pad.Single("CSMMASS", v.Mass(), -16);
 			pad.Single("LEMMASS", 0, -16);
 			pad.Octal("DAPDATR1", 011102);
 			pg.panel.scContCMC = true;
 			pg.panel.mode = gnc::CMPanel::MODE_AUTO;
 			c.Report("Entry: REFSMMAT and state vector uplinked");
-			d.Type("V37E00E");
+			d.SelectProgram(0);
 			fState = 1;
 			fTimer = 0;
 			break;
 		}
 		case 1:
-			if (!d.Idle() || fTimer < 2)
+			if (!d.Ready() || fTimer < 2)
 				break;
+			if (!UplinkTook(f, fSV)) {
+				fSV = UplinkCSMState(f);
+				c.Report("Entry: state vector uplink sent again");
+				fTimer = 0;
+				break;
+			}
 			d.Type("V48E");
 			fState = 2;
 			fTimer = 0;
@@ -771,7 +929,7 @@ EntryProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				fTimer = 0;
 				break;
 			}
-			if (fTimer > 2) {
+			if (fTimer > 2 && d.Ready()) {
 				d.Type("V46E");
 				fState = 3;
 				fTimer = 0;
@@ -798,6 +956,9 @@ EntryProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 					+ DSKYDriver::Signed(std::lround(fLon * 100)) + "E-00001E";
 				fP61Loaded = true;
 			} else if (vn == "5025" && d.Register(0) == "00041") {
+				// CM/SM separation about fifteen minutes before entry.
+				if (fWake >= 0 && get < fWake + 2400 - 900)
+					break;
 				if (f.SMAttached()) {
 					f.SeparateCMFromSM();
 					c.Report("CM/SM SEP");
@@ -850,13 +1011,204 @@ public:
 	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
 
 private:
+	void _Redesignate(AutoCrew& c, FlightSim& f, gnc::LMPGNCS& pg, Vehicle& lm);
+	gnc::StateVector fLMSV, fCSMSV;
+	Vec3 _PredictedSite(FlightSim& f, Vehicle& lm) const;
+
 	double fPDI;
 	int fState = 0;
 	double fTimer = 0;
 	double fLastKey = -100, fLastManeuver = -1e9;
 	bool fArmed = false, fV57 = false;
 	int fYaw = 0;
+	// P64: the commander looks through the LPD and redesignates away from
+	// craters and slopes.
+	bool fLooked = false, fSpotChosen = false;
+	double fSpotLat = 0, fSpotLon = 0;
+	double fClickTimer = 0;
+	int fClickAxis = -1, fClickDir = 0;
+	Vec3 fBeforeClick;
+	int fSign[2] = {-1, 1};   // ACA forward brings the site short
+	double fStep[2] = {60, 60};   // m per click, as last seen
+	int fClicks = 0;
 };
+
+
+// How rough a spot is: the worst slope under the LM's footprint (deg), with
+// boulders counted as steep.
+double
+SpotRoughness(const world::Terrain& t, double lat, double lon)
+{
+	const double m = 180 / (M_PI * 1737400.0);
+	double coslat = std::max(0.05, std::cos(lat * M_PI / 180));
+	double worst = 0;
+	const double off[9][2] = {{0, 0}, {5, 0}, {-5, 0}, {0, 5}, {0, -5},
+		{4, 4}, {-4, 4}, {4, -4}, {-4, -4}};
+	for (const auto& o : off) {
+		double la = lat + o[0] * m, lo = lon + o[1] * m / coslat;
+		worst = std::max(worst, t.Slope(la, lo));
+		if (t.BoulderHeight(la, lo) > 0.6)
+			worst = std::max(worst, 20.0);
+	}
+	return worst;
+}
+
+
+// Where the LGC is taking us, in truth: our position plus the LGC's
+// LAND - R (both in stable-member coordinates, B24 m).
+Vec3
+LandingProcedure::_PredictedSite(FlightSim& f, Vehicle& lm) const
+{
+	gnc::PadLoader& pad = *f.LGCPad();
+	Vec3 r, land;
+	pad.ReadVector("R", -24, &r);
+	pad.ReadVector("LAND", -24, &land);
+	Vec3 rows[3];
+	double* p[9] = {&rows[0].x, &rows[0].y, &rows[0].z, &rows[1].x, &rows[1].y,
+		&rows[1].z, &rows[2].x, &rows[2].y, &rows[2].z};
+	for (int i = 0; i < 9; i++)
+		pad.ReadDouble("REFSMMAT", -1, p[i], 2 * i);
+	Mat3 refsmmat = Mat3::Rows(rows[0], rows[1], rows[2]);
+	// R is from the last SERVICER pass (every 2 s), at PIPTIME.
+	double pip = 0;
+	pad.ReadDouble("PIPTIME", -28, &pip);
+	double age = Clamp(f.GET() - pip / 100.0, 0.0, 4.0);
+	if (std::getenv("LPDDIAG") && std::getenv("LPDDIAG")[0] == '2') {
+		Vec3 rt = refsmmat * (lm.position - (lm.velocity - f.Moon().MoonVelocity()) * age - f.Moon().MoonPosition());
+		std::printf("LPDDIAG %.2f pip %.2f age %.2f R-true %.0f %.0f %.0f LAND-R %.0f %.0f %.0f\n",
+			f.GET(), pip / 100, age, r.x - rt.x, r.y - rt.y, r.z - rt.z,
+			land.x - r.x, land.y - r.y, land.z - r.z);
+	}
+	return lm.position - (lm.velocity - f.Moon().MoonVelocity()) * age + refsmmat.Transposed() * (land - r);
+}
+
+
+void
+LandingProcedure::_Redesignate(AutoCrew& c, FlightSim& f, gnc::LMPGNCS& pg,
+	Vehicle& lm)
+{
+	const MoonScene& moon = f.Moon();
+	const world::Terrain& terrain = f.Terrain();
+	bool diag = c.verbose || std::getenv("LPDDIAG");
+	Vec3 up = moon.LocalVertical(lm.position);
+	// The LPD's two directions on the ground: elevation clicks move the
+	// site along the LM's forward (Z) axis, azimuth clicks across it.
+	Vec3 axes[2] = {lm.ToInertial(Vec3(0, 0, 1)), lm.ToInertial(Vec3(0, 1, 0))};
+	for (Vec3& a : axes)
+		a = (a - up * a.Dot(up)).Unit();
+
+	// A click in progress: hold the controller over briefly, let go, and
+	// wait for the next guidance pass to see where it put the site.
+	if (fClickAxis >= 0) {
+		if (fClickTimer > 0.3 && pg.panel.acaPulse) {
+			pg.panel.aca = Vec3();
+			pg.panel.acaPulse = false;
+		}
+		if (fClickTimer < 2.6)
+			return;
+		Vec3 now = _PredictedSite(f, lm) - moon.MoonPosition();
+		double moved = (now - fBeforeClick).Dot(axes[fClickAxis]);
+		if (std::fabs(moved) > 0.3 * fStep[fClickAxis]) {
+			if ((moved > 0) != (fClickDir > 0))
+				fSign[fClickAxis] = -fSign[fClickAxis];
+			fStep[fClickAxis] = std::fabs(moved);
+		}
+		if (diag) {
+			char buf[120];
+			std::snprintf(buf, sizeof(buf), "LPD click %s %+d: site moved %.1f m"
+				" (alt %.0f m)", fClickAxis == 0 ? "elevation" : "azimuth",
+				fClickDir, moved, moon.Altitude(lm.position));
+			c.Report(buf);
+		}
+		fClickAxis = -1;
+		fClickTimer = 0;
+	}
+	double alt = moon.Altitude(lm.position);
+	if (alt < 80 || alt > 2500 || fClickTimer < 1.0 || fClicks > 40)
+		return;
+	fClickTimer = 0;
+
+	Vec3 site = _PredictedSite(f, lm);
+	double lat, lon, rr;
+	moon.LatLon(site, &lat, &lon, &rr);
+	double rough = SpotRoughness(terrain, lat, lon);
+	char buf[140];
+	if (rough < 7) {
+		if (!fLooked) {
+			std::snprintf(buf, sizeof(buf), "LPD: target looks good (%.0f deg)", rough);
+			c.Report(buf);
+		}
+		fLooked = true;
+		return;
+	}
+	auto roughAt = [&](const Vec3& p) {
+		double la, lo, r;
+		moon.LatLon(p, &la, &lo, &r);
+		return SpotRoughness(terrain, la, lo);
+	};
+	// Where could the clicks put us? Each click moves the site about a
+	// step; pick the fewest clicks to smooth ground, going long rather than
+	// short (less fuel than coming back).
+	int bi = 0, bj = 0;
+	double best = 1e9;
+	for (int i = -4; i <= 4; i++)
+		for (int j = -4; j <= 4; j++) {
+			if (i == 0 && j == 0)
+				continue;
+			Vec3 p = site + axes[0] * (i * fStep[0]) + axes[1] * (j * fStep[1]);
+			if (roughAt(p) > 5)
+				continue;
+			double cost = std::abs(i) * fStep[0] * (i < 0 ? 2.0 : 1.0)
+				+ std::abs(j) * fStep[1];
+			if (cost < best) {
+				best = cost;
+				bi = i;
+				bj = j;
+			}
+		}
+	if (best > 1e8) {
+		// Nothing on the click grid: head for the nearest smooth patch.
+		double reach = std::min(400.0, std::max(40.0, alt * 0.8));
+		for (double dx = -reach; dx <= reach; dx += 6)
+			for (double dy = -reach; dy <= reach; dy += 6) {
+				Vec3 p = site + axes[0] * dx + axes[1] * dy;
+				if (std::hypot(dx, dy) > reach || roughAt(p) > 5)
+					continue;
+				double cost = std::fabs(dx) * (dx < 0 ? 2.0 : 1.0) + std::fabs(dy);
+				if (cost < best) {
+					best = cost;
+					bi = std::fabs(dx) > 0.5 * fStep[0] ? (dx > 0 ? 1 : -1) : 0;
+					bj = std::fabs(dy) > 0.5 * fStep[1] ? (dy > 0 ? 1 : -1) : 0;
+				}
+			}
+		if (best > 1e8 || (bi == 0 && bj == 0)) {
+			if (!fLooked) {
+				std::snprintf(buf, sizeof(buf), "LPD: %.0f deg slopes all round;"
+					" taking what we've got", rough);
+				c.Report(buf);
+			}
+			fLooked = true;
+			return;
+		}
+	}
+	if (!fLooked || diag) {
+		std::snprintf(buf, sizeof(buf), "LPD: target is rough (%.0f deg);"
+			" redesignating %+d long, %+d right", rough, bi, bj);
+		c.Report(buf);
+	}
+	fLooked = true;
+	// One click at a time, the bigger correction first.
+	int axis = std::abs(bi) * fStep[0] >= std::abs(bj) * fStep[1] ? 0 : 1;
+	fClickDir = axis == 0 ? (bi > 0 ? 1 : -1) : (bj > 0 ? 1 : -1);
+	double deflect = fClickDir * fSign[axis];
+	pg.panel.acaPulse = true;
+	// Pitch clicks move the site in elevation, roll clicks in azimuth.
+	pg.panel.aca = axis == 0 ? Vec3(0, deflect, 0) : Vec3(0, 0, deflect);
+	fBeforeClick = site - moon.MoonPosition();
+	fClickAxis = axis;
+	fClickTimer = 0;
+	fClicks++;
+}
 
 
 bool
@@ -882,14 +1234,55 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 		return true;
 	}
 	switch (fState) {
-		case 0:
-			d.Type("V37E00E");
+		case 0: {
+			// MSFN tracking: fresh LM and CSM state vectors for the LGC.
+			gnc::PadLoader& pad = *f.LGCPad();
+			Vec3 mp = f.Moon().MoonPosition(), mv = f.Moon().MoonVelocity();
+			gnc::StateVector lmSV, csmSV;
+			lmSV.position = lm->position - mp;
+			lmSV.velocity = lm->velocity - mv;
+			lmSV.agcTime = get;
+			csmSV.position = f.CSMVehicle().position - mp;
+			csmSV.velocity = f.CSMVehicle().velocity - mv;
+			csmSV.agcTime = get;
+			gnc::LoadStateVector(pad, lmSV, true);
+			gnc::LoadStateVector(pad, csmSV, false);
+			fLMSV = lmSV;
+			fCSMSV = csmSV;
+			pad.Double("MASS", lm->Mass(), -16);
+			pad.Single("LEMMASS", lm->Mass(), -16);
+			// The crew's V48 after undocking: LM alone.
+			pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~0100);
+			c.Report("State vectors uplinked to the LGC");
+			if (std::getenv("PDIDIAG")) {
+				State s{lm->position, lm->velocity, f.JulianDate()};
+				Approach ap = ClosestMoonApproach(s, 3 * 3600, true);
+				Vec3 rp = ap.state.r - MoonPos(ap.jd);
+				Vec3 site = f.Moon().FixedToInertial() * world::LatLonToVector(
+					f.Mission().site.latitude, f.Mission().site.longitude, 1.0);
+				double tl = 0;
+				pad.ReadDouble("TLAND", -28, &tl);
+				char b[200];
+				std::snprintf(b, sizeof(b), "PDIDIAG perilune %.0f m above site radius"
+					" at GET %.0f (PDI planned %.0f), %.2f deg from site; TLAND %.0f",
+					ap.radius - f.Mission().site.radius, f.GET() + (ap.jd - s.jd) * 86400,
+					fPDI, std::acos(Clamp(rp.Unit().Dot(site), -1, 1)) / kDeg, tl / 100);
+				c.Report(b);
+			}
+			d.SelectProgram(0);
 			fState = 1;
 			fTimer = 0;
 			break;
+		}
 		case 1:
-			if (!d.Idle() || fTimer < 2)
+			if (!d.Ready() || fTimer < 2)
 				break;
+			if (!UplinkTook(*f.LGCPad(), fLMSV, true)
+					|| !UplinkTook(*f.LGCPad(), fCSMSV, false)) {
+				c.Report("LGC state vector uplink sent again");
+				fState = 0;
+				break;
+			}
 			d.Type("V48E");
 			fState = 2;
 			fTimer = 0;
@@ -946,6 +1339,9 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				fV57 = true;
 				c.Report("Radar data good: V57");
 			}
+			fClickTimer += dt;
+			if (d.Program() == "64")
+				_Redesignate(c, f, *pg, *lm);
 			if (!d.Idle() || !d.Flashing() || get - fLastKey < 2
 					|| d.StableFor() < 0.8)
 				break;
@@ -968,7 +1364,11 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				fLastKey = get;
 			}
 			if (get > fPDI + 1200) {
-				status = "still flying " + d.Display();
+				char fr[48];
+				std::snprintf(fr, sizeof(fr), " FAILREG %05o %05o %05o",
+					f.LGCPad()->Word("FAILREG", 0), f.LGCPad()->Word("FAILREG", 1),
+					f.LGCPad()->Word("FAILREG", 2));
+				status = "still flying " + d.Display() + fr;
 				failed = true;
 				return true;
 			}
@@ -1054,14 +1454,28 @@ DockingProcedure::_Translate(FlightSim& f, const FlightSim::DockingTarget& t,
 	double along = d.Dot(a);
 	Vec3 perp = d - a * along;
 	double lateral = perp.Length();
-	Vec3 want = perp * -0.06;
-	if (want.Length() > 0.15)
-		want = want.Unit() * 0.15;
-	bool lined = lateral < 0.15 + 0.03 * std::max(0.0, along);
-	if (lined)
-		want += a * -closing;
-	else if (along < standoff)
-		want += a * 0.05;
+	Vec3 want;
+	if (along < standoff) {
+		// Behind the drogue's plane, or too close in front of it to line
+		// up: get out in front first, keeping clear of the LM sideways.
+		bool lined = along > 0 && lateral < 0.15 + 0.03 * along;
+		if (lined)
+			want = a * -closing + perp * -0.06;
+		else {
+			want = a * 0.15;
+			if (lateral < 6.0 && along < 0.5) {
+				Vec3 out = lateral > 0.01 ? perp.Unit()
+					: (std::fabs(a.x) < 0.9 ? Vec3(1, 0, 0) : Vec3(0, 1, 0)).Cross(a).Unit();
+				want += out * 0.1;
+			}
+		}
+	} else {
+		want = perp * -0.06;
+		if (want.Length() > 0.15)
+			want = want.Unit() * 0.15;
+		if (lateral < 0.15 + 0.03 * along)
+			want += a * -closing;
+	}
 	Vec3 rel = v.velocity - t.drogueVelocity;
 	Vec3 e = v.ToBody(want - rel);
 	const double band = 0.01;
@@ -1074,6 +1488,13 @@ DockingProcedure::_Translate(FlightSim& f, const FlightSim::DockingTarget& t,
 		lastDiag = f.GET();
 		std::printf("      dock: along %.2f lateral %.2f  rel %.3f %.3f %.3f  want %.3f %.3f %.3f\n",
 			along, lateral, rel.x, rel.y, rel.z, want.x, want.y, want.z);
+		if (f.LMVehicle()) {
+			Vehicle& lm = *f.LMVehicle();
+			std::printf("      LM rates %.3f %.3f %.3f deg/s, CSM X vs axis %.1f deg, mode %d\n",
+				lm.rates.x / kDeg, lm.rates.y / kDeg, lm.rates.z / kDeg,
+				std::acos(Clamp(v.ToInertial(Vec3(1, 0, 0)).Dot(-a), -1, 1)) / kDeg,
+				(int)f.LMPGNCS()->panel.mode);
+		}
 	}
 }
 
@@ -1096,15 +1517,22 @@ DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			pad.Single("CSMMASS", sm, -16);
 			pad.Single("LEMMASS", 0, -16);
 			pad.Octal("DAPDATR1", 011103);   // CSM alone, 2 deg/s maneuvers
+			// Platform to the present attitude: the turnaround is then a
+			// pitch about the stable member's Y axis, far from gimbal lock.
+			{
+				Vehicle& v = f.CSMVehicle();
+				AlignCMC(f, Mat3::Rows(v.ToInertial(Vec3(1, 0, 0)),
+					v.ToInertial(Vec3(0, 1, 0)), v.ToInertial(Vec3(0, 0, 1))));
+			}
 			pg.panel.scContCMC = true;
 			pg.panel.mode = gnc::CMPanel::MODE_AUTO;
-			d.Type("V37E00E");
+			d.SelectProgram(0);
 			fState = 1;
 			fTimer = 0;
 			break;
 		}
 		case 1:
-			if (!d.Idle() || fTimer < 2)
+			if (!d.Ready() || fTimer < 2)
 				break;
 			d.Type("V48E");
 			fState = 2;
@@ -1121,7 +1549,7 @@ DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				fTimer = 0;
 				break;
 			}
-			if (fTimer > 2) {
+			if (fTimer > 2 && d.Ready()) {
 				d.Type("V46E");
 				fState = 3;
 				fTimer = 0;
@@ -1267,13 +1695,17 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 	}
 	switch (fState) {
 		case 0:
-			d.Type("V37E00E");
+			d.SelectProgram(0);
 			fState = 1;
 			fTimer = 0;
 			break;
 		case 1:
 			if (!d.Idle() || fTimer < 2)
 				break;
+			if (f.LMLanded()) {
+				PrepareLGCForAscent(f);
+				c.Report("P57 realign; surface V48; CSM state vector uplinked");
+			}
 			d.SelectProgram(12);
 			fState = 2;
 			fTimer = 0;
@@ -1283,10 +1715,17 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			if (!fLit && aps) {
 				fLit = true;
 				c.Report("Ascent engine on");
+				if (std::getenv("PHASEDIAG")) {
+					char b[80];
+					std::snprintf(b, sizeof(b), "phase: CSM leads by %.1f deg",
+						AutoCrew::PhaseAngle(f, get));
+					c.Report(b);
+				}
 			}
 			if (fLit && !aps && get > fTIG + 60) {
 				c.Report("Insertion");
 				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+				pg->panel.ascentFeed = false;
 				fState = 3;
 				fTimer = 0;
 				break;
@@ -1295,6 +1734,7 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			if (!fStaged && get > fTIG - 8) {
 				f.StageLM();
 				pg->panel.engineArm = gnc::LMPanel::ARM_ASCENT;
+				pg->panel.ascentFeed = true;     // ASC FEED A and B open
 				fStaged = true;
 				c.Report("Abort stage; engine arm ascent");
 			}
@@ -1618,7 +2058,26 @@ RendezvousProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				c.Report(buf);
 				return true;
 			}
-			(void)closing;
+			if (std::getenv("RNDZDIAG") && std::fmod(get, 60.0) < dt) {
+				double rcs = 0;
+				for (const Module& m : lm.Modules())
+					for (size_t i = 0; i < m.tanks.size(); i++)
+						if (m.name == "LM ascent stage" && i > 0)
+							rcs += m.tanks[i].mass;
+				std::printf("      braking: range %.0f m closing %.2f |v| %.2f m/s"
+					" need %.2f %.2f %.2f thc %d %d %d RCS %.0f kg rates %.2f %.2f %.2f aca %.1f %.1f %.1f mode %d P%s\n", range, closing,
+					v.Length(), b.x, b.y, b.z, pg->panel.thc[0], pg->panel.thc[1],
+					pg->panel.thc[2], rcs, lm.rates.x / kDeg, lm.rates.y / kDeg, lm.rates.z / kDeg,
+					pg->panel.aca.x, pg->panel.aca.y, pg->panel.aca.z, (int)pg->panel.mode,
+					c.lgc.Program().c_str());
+				double mass = 0;
+				f.LGCPad()->ReadDouble("MASS", -16, &mass);
+				const Module* asc = lm.FindModule("LM ascent stage");
+				std::printf("        DAPBOOLS %05o MASS %.0f (truth %.0f) jets %03o %03o RCS A %.1f B %.1f\n",
+					f.LGCPad()->Word("DAPBOOLS"), mass, lm.Mass(), pg->JetBits(5), pg->JetBits(6),
+					asc && asc->tanks.size() > 2 ? asc->tanks[1].mass : -1,
+					asc && asc->tanks.size() > 2 ? asc->tanks[2].mass : -1);
+			}
 			if (get > fTPF + 3600) {
 				status = "never closed";
 				failed = true;
@@ -1638,6 +2097,64 @@ std::unique_ptr<Procedure>
 AutoCrew::Rendezvous()
 {
 	return std::unique_ptr<Procedure>(new RendezvousProcedure());
+}
+
+
+// ---------------------------------------------------------------------------
+// CMC DAP configuration
+
+
+std::unique_ptr<Procedure>
+AutoCrew::ConfigureCMCDAP()
+{
+	auto state = std::make_shared<int>(0);
+	auto timer = std::make_shared<double>(0);
+	return Do("DAP configuration", [state, timer](AutoCrew& c, FlightSim& f, double dt) {
+		DSKYDriver& d = c.cmc;
+		*timer += dt;
+		switch (*state) {
+			case 0: {
+				Vehicle& v = f.CSMVehicle();
+				double lm = 0;
+				for (const Module& m : v.Modules())
+					if (m.name == "LM descent stage" || m.name == "LM ascent stage")
+						lm += m.Mass();
+				gnc::PadLoader& pad = f.CMCPad();
+				pad.Single("CSMMASS", v.Mass() - lm, -16);
+				pad.Single("LEMMASS", lm, -16);
+				pad.Octal("DAPDATR1", lm > 0 ? 021102 : 011102);
+				d.SelectProgram(0);
+				*state = 1;
+				*timer = 0;
+				return false;
+			}
+			case 1:
+				if (!d.Ready() || *timer < 2)
+					return false;
+				d.Type("V48E");
+				*state = 2;
+				*timer = 0;
+				return false;
+			case 2:
+				if (!d.Idle() || *timer < 1)
+					return false;
+				if (d.Flashing() && d.StableFor() > 0.8
+						&& (d.VerbNoun().substr(2) == "46" || d.VerbNoun().substr(2) == "47"
+							|| d.VerbNoun().substr(2) == "48")) {
+					d.Type("P");
+					*timer = 0;
+					return false;
+				}
+				if (*timer > 2 && d.Ready()) {
+					d.Type("V46E");
+					*state = 3;
+					*timer = 0;
+				}
+				return false;
+			default:
+				return d.Idle() && *timer > 2;
+		}
+	});
 }
 
 }  // namespace flight

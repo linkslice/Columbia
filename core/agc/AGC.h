@@ -162,6 +162,7 @@ private:
 	void _TakeInterrupt(int which);
 	void _Tick(int mct);
 	void _StealCycles(int mct);
+	void _Traps();
 	void _CounterIncrement(uint16_t cell, int delta, bool* overflow);
 	void _CounterOverflow(uint16_t address);
 	void _Alarm();

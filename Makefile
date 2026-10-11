@@ -140,3 +140,7 @@ $(TESTDIR)/contingency_test: tests/contingency_test.cpp $(FLIGHT_SRCS)
 $(TESTDIR)/autocrew_test: tests/autocrew_test.cpp $(FLIGHT_SRCS)
 	@mkdir -p $(TESTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(TESTDIR)/mission_test_full: tests/mission_test_full.cpp $(FLIGHT_SRCS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^

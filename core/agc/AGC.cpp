@@ -309,6 +309,8 @@ Computer::_WriteChannel(int ch, uint16_t value16)
 	if (ch == 011 && (v & 01000))
 		fRestartLight = false;  // bit 10: caution reset
 	fChannels[ch] = v;
+	if (ch == 013)
+		_Traps();
 	if (onChannelWrite)
 		onChannelWrite(ch, v);
 }
@@ -318,7 +320,10 @@ void
 Computer::SetInputChannel(int ch, uint16_t value)
 {
 	if (ch > 2 && ch < 0200)
+	{
 		fChannels[ch] = value & 077777;
+		_Traps();
+	}
 }
 
 
@@ -332,6 +337,28 @@ Computer::SetInputBit(int ch, int bit, bool on)
 		fChannels[ch] |= mask;
 	else
 		fChannels[ch] &= uint16_t(~mask);
+	_Traps();
+}
+
+
+// Hand-controller interrupt (RUPT 10): the traps armed by channel 13
+// bits 12-14 fire when their input bits go active (low), and disarm.
+void
+Computer::_Traps()
+{
+	uint16_t& ch13 = fChannels[013];
+	if ((ch13 & 04000) && (fChannels[031] & 077) != 077) {
+		ch13 &= uint16_t(~04000);
+		fPendingRupt[RUPT_HAND] = true;
+	}
+	if ((ch13 & 010000) && (fChannels[031] & 07700) != 07700) {
+		ch13 &= uint16_t(~010000);
+		fPendingRupt[RUPT_HAND] = true;
+	}
+	if ((ch13 & 020000) && (fChannels[032] & 01777) != 01777) {
+		ch13 &= uint16_t(~020000);
+		fPendingRupt[RUPT_HAND] = true;
+	}
 }
 
 

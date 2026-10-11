@@ -50,7 +50,8 @@ struct Approach {
 	State state;
 	bool found = false;
 };
-Approach ClosestMoonApproach(const State& s, double maxSeconds);
+Approach ClosestMoonApproach(const State& s, double maxSeconds,
+	bool throughSurface = false);
 
 // Earth's atmosphere interface crossing (400,000 ft) of a return coast.
 struct Interface {
@@ -82,12 +83,23 @@ Vec3 CircularizeAt(const State& s, double mu, const Vec3& bodyPos,
 // TEI from lunar orbit: delta-V at s.jd that brings the CSM to entry
 // interface with flight-path angle `gamma`. Returns the transit time.
 // The burn point is searched over one orbit; `burnState` returns it.
+// With `wantEIJD`, the transit is chosen to reach entry interface then
+// (the RTCC's way of putting the splash on the recovery line).
 bool TargetTEI(const State& orbit, double gamma, Vec3* deltaV, double* eiJD,
-	State* burnState = nullptr);
+	State* burnState = nullptr, double wantEIJD = 0);
 // Midcourse correction to bring a coast to the given pericynthion or
 // entry angle.
 bool TargetMCCMoon(const State& s, double pericynthionAlt, Vec3* deltaV);
 bool TargetMCCEarth(const State& s, double gamma, Vec3* deltaV);
+// Midcourse correction to arrive at the Moon in a given orbital plane
+// (unit angular-momentum vector, Moon-relative) at the given
+// pericynthion: the plane the LOI burn and the landing site need. With
+// `siteDir` (the landing site's direction at the landing time), the plane
+// is the one through the site that the approach can reach, in the sense
+// of `planeNormal`.
+bool TargetLunarApproach(const State& s, double pericynthionAlt,
+	const Vec3& planeNormal, Vec3* deltaV, Approach* arrival = nullptr,
+	const Vec3* siteDir = nullptr);
 
 // Two-body Lambert problem (universal variables): the velocities at r1
 // and r2 for a transfer of `tof` seconds, the short way round in the

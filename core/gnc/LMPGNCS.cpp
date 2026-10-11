@@ -347,6 +347,10 @@ LMPGNCS::_Thrusters()
 	fJets5 = fComputer.Channel(005) & 0377;
 	fJets6 = fComputer.Channel(006) & 0377;
 	bool lgcHasJets = panel.pgnsControl && panel.mode != LMPanel::MODE_OFF;
+	// ASC FEED: the jets draw on the ascent engine's propellant.
+	const sim::Module* asc = fVehicle->FindModule("LM ascent stage");
+	bool ascFeed = panel.ascentFeed && asc && !asc->tanks.empty()
+		&& asc->tanks[0].mass > 1.0;
 	for (int ch = 5; ch <= 6; ch++) {
 		uint16_t bits = ch == 5 ? fJets5 : fJets6;
 		for (int bit = 1; bit <= 8; bit++) {
@@ -363,6 +367,9 @@ LMPGNCS::_Thrusters()
 				2, 0, 1, 3, 6, 7, 5, 4,     // ch5: jets 1 2 5 6 9 10 13 14
 				3, 2, 5, 7, 6, 1, 0, 4      // ch6: jets 7 3 15 11 12 8 4 16
 			};
+			if (fJetTank[index] < 0)
+				fJetTank[index] = t->tank;
+			t->tank = ascFeed ? 0 : fJetTank[index];
 			bool disabled = panel.thrusterPairOff[pairOf[index]];
 			t->on = lgcHasJets && (bits & Bit(bit)) && !disabled
 				&& !jetDriverFailed[index];

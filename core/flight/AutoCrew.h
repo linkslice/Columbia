@@ -34,6 +34,9 @@ public:
 	// refuses it for the moment (1520: busy integrating the state vector).
 	void SelectProgram(int program);
 	bool Idle() const { return fQueue.empty() && fWait <= 0; }
+	// Idle, any program change finished, and the display settled.
+	bool Ready() const
+		{ return Idle() && fWantProgram < 0 && fStable > 1.0 && !State().oprErr; }
 	void Step(double dt);
 	void Clear() { fQueue.clear(); }
 
@@ -111,6 +114,12 @@ public:
 	static void ExternalDeltaV(FlightSim& f, double impulseGET,
 		const sim::Vec3& dvInertial, double* tig, sim::Vec3* lvlh,
 		double thrust = 91188, double isp = 314);
+	// How far the CSM leads the LM around the Moon at `get` (degrees, in
+	// the CSM's orbit plane; negative when it trails).
+	static double PhaseAngle(FlightSim& f, double get);
+	// The RTCC's liftoff time: the first ascent ignition after `earliest`
+	// with the CSM leading the landed LM by `phase` degrees.
+	static double LiftoffTime(FlightSim& f, double earliest, double phase);
 	static std::unique_ptr<Procedure> CSMBurn(double tig, const sim::Vec3& dvLVLH,
 		const std::string& label);
 	// Entry: CM/SM separation, P61 to P67 to the splash point.
@@ -129,6 +138,9 @@ public:
 	// with the hand controllers, dock, back the LM out.
 	static std::unique_ptr<Procedure> TransposeAndDock(double startGET,
 		bool transposition = true);
+	// V48/V46 with the masses and configuration of the moment (after
+	// undocking, docking or staging).
+	static std::unique_ptr<Procedure> ConfigureCMCDAP();
 	// Just keys (e.g. "V37E00E") into the CMC or LGC.
 	static std::unique_ptr<Procedure> Keys(bool lgc, const std::string& keys,
 		double atGET = 0);

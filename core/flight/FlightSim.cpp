@@ -56,6 +56,18 @@ MainThrust(const Vehicle& v)
 	return false;
 }
 
+// Thrust of the main engines now (N).
+double
+MainThrustForce(const Vehicle& v)
+{
+	double f = 0;
+	for (const Module& m : v.Modules())
+		for (const Thruster& t : m.thrusters)
+			if (t.kind == THRUSTER_MAIN)
+				f += t.maxThrust * (t.failedOn ? 1.0 : t.level) * t.health;
+	return f;
+}
+
 }  // namespace
 
 
@@ -479,6 +491,26 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 
 
 void
+FlightSim::PowerUpLGC()
+{
+	if (!fLGC)
+		return;
+	// Landing-site REFSMMAT: X up through the site at landing, Z downrange
+	// (the orientation P63 expects; also fine for the ascent).
+	fMoonScene->SetTime(JulianDate());
+	Vec3 site = fMoonScene->FixedToInertial() * world::LatLonToVector(
+		fMission.site.latitude, fMission.site.longitude, 1.0);
+	Vec3 vrel = fCSM->velocity - fMoonScene->MoonVelocity();
+	Vec3 rrel = fCSM->position - fMoonScene->MoonPosition();
+	Vec3 h = rrel.Cross(vrel).Unit();
+	Vec3 downrange = h.Cross(site).Unit();
+	Mat3 lmRef = Mat3::Rows(site, downrange.Cross(site), downrange);
+	_PadLoadLGC(lmRef);
+	Log(LogEntry::Event, fMission.lmCallsign + " powered up");
+}
+
+
+void
 FlightSim::PressCMC(int key)
 {
 	fCMC->PressKey(key);
@@ -594,18 +626,8 @@ FlightSim::Start(StartPoint start, std::string* error)
 	_PadLoadCMC(refsmmat);
 	bool lgcOn = start == StartPoint::PoweredDescent
 		|| start == StartPoint::LunarSurface || start == StartPoint::LunarAscent;
-	if (lgcOn) {
-		// Landing-site REFSMMAT: X up through the site at landing, Z
-		// downrange (the orientation P63 expects).
-		Vec3 site = fMoonScene->FixedToInertial() * world::LatLonToVector(
-			fMission.site.latitude, fMission.site.longitude, 1.0);
-		Vec3 vrel = fCSM->velocity - fMoonScene->MoonVelocity();
-		Vec3 rrel = fCSM->position - fMoonScene->MoonPosition();
-		Vec3 h = rrel.Cross(vrel).Unit();
-		Vec3 downrange = h.Cross(site).Unit();
-		Mat3 lmRef = Mat3::Rows(site, downrange.Cross(site), downrange);
-		_PadLoadLGC(lmRef);
-	}
+	if (lgcOn)
+		PowerUpLGC();
 	fIU.reset();
 	boosterGuidance = nullptr;
 	if (fBoosterAttached) {
@@ -1386,9 +1408,8 @@ FlightSim::Advance(double realSeconds)
 {
 	if (fPaused || fPhase == Phase::Lost)
 		return;
+	// The requested warp stands; the situation may hold it down for now.
 	double warp = std::min(fWarp, MaxWarp());
-	if (warp != fWarp && fWarp > MaxWarp())
-		fWarp = warp;
 	Run(realSeconds * warp);
 }
 
@@ -1438,7 +1459,10 @@ FlightSim::_Step(double dt)
 				v.attitude = Quat::FromMatrix(ef) * fPadAttitude;
 			}
 			// Engines can still start (liftoff from either body).
-			bool thrust = MainThrust(v);   // RCS pulses don't lift it off
+			// RCS pulses don't lift it off, nor does an engine that can't
+			// overcome the vehicle's weight (the DPS tail-off at contact).
+			bool thrust = MainThrust(v) && MainThrustForce(v)
+				> v.Mass() * _Gravity(v.position, jd).Length();
 			if (!thrust || (&v == fCSM.get() && fOnPad && holdDown)) {
 				// Engines running up against the hold-down arms, or
 				// just the accelerometers feeling the ground.
@@ -1529,7 +1553,14 @@ FlightSim::_Coast(double dt)
 		State e = Propagate(s, (jd - v.jd) * kDay);
 		v.position = e.r;
 		v.velocity = e.v;
-		v.attitude = v.attitude.Integrated(v.rates, dt).Normalized();
+		// The spacecraft with a running autopilot hold their attitude
+		// through a long coast (the DAP's limit cycle averages out); other
+		// objects tumble on.
+		bool held = (&v == fCSM.get()) || (&v == fLM.get() && fLGCPowered);
+		if (held)
+			v.rates = Vec3();
+		else
+			v.attitude = v.attitude.Integrated(v.rates, dt).Normalized();
 		v.jd = jd;
 	};
 	coast(*fCSM);
@@ -1680,6 +1711,19 @@ FlightSim::_SecondTick()
 		Situation s = Situate(*fCSM);
 		if (s.nearMoon && s.apoapsis > 0 && s.apoapsis < 2.0e7)
 			SetPhase(Phase::LunarOrbit);
+	} else if (fPhase == Phase::LunarSurface || fPhase == Phase::LunarAscent) {
+		// Off the surface: ascent while the engine burns, then the
+		// rendezvous until the crew are back together.
+		if (fLM && !fLMLanded) {
+			if (MainThrust(*fLM))
+				SetPhase(Phase::LunarAscent);
+			else
+				SetPhase(Phase::Rendezvous);
+		} else if (!fLM && !fLMLanded) {
+			SetPhase(Phase::LunarOrbit);
+		}
+	} else if (fPhase == Phase::Rendezvous && (fLMDocked || !fLM)) {
+		SetPhase(Phase::LunarOrbit);
 	} else if (fPhase == Phase::LunarOrbit || fPhase == Phase::Rendezvous) {
 		Situation s = Situate(*fCSM);
 		if (!s.nearMoon || s.apoapsis < 0)

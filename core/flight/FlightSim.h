@@ -155,6 +155,10 @@ public:
 	int CrewInCM() const { return fCrewInCM; }
 	int CrewInLM() const { return fCrewInLM; }
 	bool TransferCrew(int toLM);
+	// LM activation: the LGC powered and pad-loaded (state vectors, landing
+	// site, REFSMMAT), the platform aligned.
+	void PowerUpLGC();
+	bool LGCPowered() const { return fLGCPowered; }
 
 	// --- Systems and crew -----------------------------------------------------
 	CSMSystems csmSystems;

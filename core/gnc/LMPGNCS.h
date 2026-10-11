@@ -46,6 +46,7 @@ struct LMPanel {
 	bool gimbalEnable = true;      // descent engine gimbal enable
 	bool lrAuto = true;            // LR antenna slew switch in AUTO
 	bool thrusterPairOff[8] = {};  // RCS isolation (channel 32 bits 1-8)
+	bool ascentFeed = false;       // RCS ASC FEED A/B open: jets on APS propellant
 	bool imuCage = false;
 };
 
@@ -110,6 +111,8 @@ private:
 
 	agc::Computer& fComputer;
 	sim::Vehicle* fVehicle;
+	int fJetTank[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		-1, -1};
 	sim::Quat fFrame;             // this spacecraft's body -> vehicle frame
 	sim::Quat _Attitude() const { return fVehicle->attitude * fFrame; }
 

@@ -236,8 +236,33 @@ TEI(const std::string& ropes, int mission)
 					(sim.CSMVehicle().position - p.r).Length() / 1000,
 					(sim.CSMVehicle().velocity - p.v).Length());
 			});
-			f.stepHooks.push_back([sens2, mtig](FlightSim& sim, double) {
+			f.stepHooks.push_back([sens2, mtig, mdv](FlightSim& sim, double) {
 				double k = sim.GET() - mtig;
+				static bool shown = false;
+				if (k > -1 && !shown) {
+					shown = true;
+					Vec3 x = sim.CSMVehicle().ToInertial(Vec3(1, 0, 0));
+					gnc::PadLoader& pad = sim.CMCPad();
+					Vec3 rows[3];
+					for (int i = 0; i < 3; i++) {
+						pad.ReadDouble("REFSMMAT", -1, &rows[i].x, 6 * i);
+						pad.ReadDouble("REFSMMAT", -1, &rows[i].y, 6 * i + 2);
+						pad.ReadDouble("REFSMMAT", -1, &rows[i].z, 6 * i + 4);
+					}
+					Mat3 m = Mat3::Rows(rows[0], rows[1], rows[2]);
+					Vec3 vg;
+					pad.ReadVector("VG", -7, &vg);
+					Vec3 vgI = m.Transposed() * vg;
+					Mat3 truth = sim.CMPGNCS().imu.REFSMMAT();
+					double worst = 0;
+					for (int i = 0; i < 3; i++)
+						worst = std::max(worst, std::acos(Clamp(m.Row(i).Dot(truth.Row(i)), -1, 1)) / kDeg);
+					std::printf("      MCC T-1: X vs mdv %.1f deg, CMC VG vs mdv %.1f deg, X vs CMC VG %.1f, VG(basic) vs mdv %.1f, REFSMMAT cmc vs imu %.2f deg\n",
+						std::acos(Clamp(x.Dot(mdv.Unit()), -1, 1)) / kDeg,
+						std::acos(Clamp(vgI.Unit().Dot(mdv.Unit()), -1, 1)) / kDeg,
+						std::acos(Clamp(vgI.Unit().Dot(x), -1, 1)) / kDeg,
+						std::acos(Clamp(vg.Unit().Dot(mdv.Unit()), -1, 1)) / kDeg, worst);
+				}
 				static Vec3 pre;
 				if (k < -6 && k > -1600) {
 					pre += sim.CSMVehicle().SensedDeltaV();
@@ -288,7 +313,12 @@ EntryRun(const std::string& ropes, int mission)
 	crew.Install();
 	Echo(f, crew);
 	crew.verbose = std::getenv("CREWDIAG") != nullptr;
-	crew.Add(AutoCrew::Entry(ms.splashLatitude, ms.splashLongitude));
+	double tLat = ms.splashLatitude, tLon = ms.splashLongitude;
+	if (std::getenv("ENTRYSHIFT")) {
+		tLon += std::atof(std::getenv("ENTRYSHIFT"));
+		std::printf("  target moved to %.2f %.2f\n", tLat, tLon);
+	}
+	crew.Add(AutoCrew::Entry(tLat, tLon));
 	f.SetWarp(10000);
 	while (!f.Lost() && f.CurrentPhase() != Phase::Recovery && f.GET() < ms.plan.entry + 3000)
 		f.Advance(0.05);
@@ -297,7 +327,7 @@ EntryRun(const std::string& ropes, int mission)
 	Vec3 fixed = world::Ephemeris::EarthFixedToInertial(f.JulianDate()).Transposed()
 		* v.position;
 	world::VectorToLatLon(fixed, &lat, &lon, &r);
-	Vec3 tgt = world::LatLonToVector(ms.splashLatitude, ms.splashLongitude, 1.0);
+	Vec3 tgt = world::LatLonToVector(tLat, tLon, 1.0);
 	double miss = std::acos(Clamp(fixed.Unit().Dot(tgt), -1, 1)) * world::kREarth;
 	std::printf("  splash %.2f N %.2f E, %.1f nmi from target, max %.1f g\n",
 		lat, lon, miss / 1852, f.MaxGLoad());

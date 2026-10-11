@@ -132,7 +132,7 @@ ConicOf(const Vec3& r, const Vec3& v, double mu)
 
 
 Approach
-ClosestMoonApproach(const State& s, double maxSeconds)
+ClosestMoonApproach(const State& s, double maxSeconds, bool throughSurface)
 {
 	Approach best;
 	auto rangeRate = [](const State& st) {
@@ -149,8 +149,8 @@ ClosestMoonApproach(const State& s, double maxSeconds)
 			bracketed = true;
 			return true;
 		}
-		// Impact: stop.
-		return (b.r - MoonPos(b.jd)).Length() < world::kRMoon;
+		// Impact: stop (unless asked to look through the Moon).
+		return !throughSurface && (b.r - MoonPos(b.jd)).Length() < world::kRMoon;
 	});
 	if (!bracketed)
 		return best;
@@ -435,8 +435,17 @@ CircularizeAt(const State& s, double mu, const Vec3& bodyPos,
 
 bool
 TargetTEI(const State& orbit0, double gamma, Vec3* deltaV, double* eiJD,
-	State* burnState)
+	State* burnState, double wantEIJD)
 {
+	// Transit time wanted: about 60 hours, or (with a wanted entry time)
+	// what reaches it.
+	auto transitCost = [&](double transitH, double burnJD) {
+		if (wantEIJD > 0) {
+			double want = (wantEIJD - burnJD) * 24;
+			return std::max(0.0, std::fabs(transitH - want) - 0.1) * 2.0e6;
+		}
+		return std::max(0.0, std::fabs(transitH - 60) - 6) * 2.0e6;
+	};
 	// The burn point matters as much as the size: scan one orbit for the
 	// place and magnitude whose return perigee is lowest, then solve for
 	// the entry angle with magnitude (and a touch of timing).
@@ -475,7 +484,7 @@ TargetTEI(const State& orbit0, double gamma, Vec3* deltaV, double* eiJD,
 			double rp = perigee(burn(at, mag), &jd);
 			double transit = (jd - at.jd) * 24;
 			double score = std::fabs(rp - (world::kREarth + 40000))
-				+ std::max(0.0, std::fabs(transit - 60) - 6) * 2.0e6;
+				+ transitCost(transit, at.jd);
 			if (score < bestScore) {
 				bestScore = score;
 				bestDt = dt;
@@ -500,7 +509,7 @@ TargetTEI(const State& orbit0, double gamma, Vec3* deltaV, double* eiJD,
 				double rp = perigee(burn(at, mag), &jd);
 				double transit = (jd - at.jd) * 24;
 				double score = std::fabs(rp - (world::kREarth + 40000))
-					+ std::max(0.0, std::fabs(transit - 60) - 6) * 2.0e6;
+					+ transitCost(transit, at.jd);
 				if (score < bestScore) {
 					bestScore = score;
 					bestDt = dt;
@@ -576,6 +585,141 @@ TargetMCCMoon(const State& s, double periAlt, Vec3* deltaV)
 	if (!ok)
 		return false;
 	*deltaV = along * x[0] + radial * x[1];
+	return true;
+}
+
+
+// B-plane of the lunar approach, from the osculating hyperbola once inside
+// 40,000 km of the Moon: the incoming asymptote S, the miss vector B and
+// the hyperbolic excess speed.
+static bool
+ApproachBPlane(const State& s, Vec3* S, Vec3* B, double* vInf, double* jdNear,
+	bool atPericynthion = false)
+{
+	State near;
+	bool inside = false;
+	if (atPericynthion) {
+		Approach ap = ClosestMoonApproach(s, 5 * kDay, true);
+		inside = ap.found;
+		near = ap.state;
+	} else {
+		Propagate(s, 5 * kDay, [&](const State&, const State& b) {
+			if ((b.r - MoonPos(b.jd)).Length() < 4.0e7) {
+				near = b;
+				inside = true;
+				return true;
+			}
+			return false;
+		});
+	}
+	if (!inside)
+		return false;
+	const double mu = world::kMuMoon;
+	Vec3 r = near.r - MoonPos(near.jd), v = near.v - MoonVel(near.jd);
+	double v2 = v.Dot(v), rm = r.Length();
+	double vinf2 = v2 - 2 * mu / rm;
+	if (vinf2 <= 0)
+		return false;
+	Vec3 h = r.Cross(v);
+	Vec3 ev = (r * (v2 - mu / rm) - v * r.Dot(v)) / mu;
+	double e = ev.Length();
+	if (e <= 1)
+		return false;
+	Vec3 eh = ev / e, hh = h.Unit();
+	*S = (eh + hh.Cross(eh) * std::sqrt(e * e - 1)) / e;
+	*vInf = std::sqrt(vinf2);
+	*B = S->Cross(h) / *vInf;
+	*jdNear = near.jd;
+	return true;
+}
+
+
+bool
+TargetLunarApproach(const State& s, double periAlt, const Vec3& n0,
+	Vec3* deltaV, Approach* arrival, const Vec3* siteDir)
+{
+	// The plane wanted: n0, or (given the landing site's direction at the
+	// landing time) the plane through the site that contains the approach
+	// asymptote, in n0's sense, the one the approach can actually take.
+	auto planeFor = [&](const Vec3& S) {
+		if (!siteDir)
+			return n0;
+		Vec3 m = siteDir->Cross(S);
+		if (m.Dot(n0) < 0)
+			m = -m;
+		return m.Unit();
+	};
+	// B-plane targeting: the miss vector set so the approach lies in the
+	// plane with normal n at the wanted pericynthion, arriving when it
+	// would have anyway.
+	const double mu = world::kMuMoon;
+	double rp = world::kRMoon + periAlt;
+	Vec3 S0, B0;
+	double vinf0, jdNear0;
+	if (!ApproachBPlane(s, &S0, &B0, &vinf0, &jdNear0))
+		return false;
+	if (S0.Cross(planeFor(S0)).Length() < 1e-6)
+		return false;
+	double bMag = rp * std::sqrt(1 + 2 * mu / (rp * vinf0 * vinf0));
+	Vec3 along = s.v.Unit();
+	Vec3 normal = s.r.Cross(s.v).Unit();
+	Vec3 radial = normal.Cross(along);
+	// Stage 1, on the B-plane (well conditioned however far off the
+	// approach is): radial and out-of-plane delta-V.
+	double y[2] = {0, 0};
+	{
+		const double step[2] = {0.1, 0.1}, tol[2] = {2000, 2000};
+		bool ok = Newton<2>([&](const double* p, double* out) {
+			State st = s;
+			st.v += radial * p[0] + normal * p[1];
+			Vec3 S, B;
+			double vinf, jdn;
+			if (!ApproachBPlane(st, &S, &B, &vinf, &jdn))
+				return false;
+			Vec3 nS = planeFor(S);
+			Vec3 Tn = S.Cross(nS).Unit(), Rn = S.Cross(Tn);
+			out[0] = B.Dot(Tn) - bMag;
+			out[1] = B.Dot(Rn);
+			if (getenv("TLADIAG"))
+				fprintf(stderr, "TLA B: %.3f %.3f -> %.0f %.0f\n", p[0], p[1],
+					out[0], out[1]);
+			return true;
+		}, y, step, tol, 30);
+		if (!ok)
+			return false;
+	}
+	// Stage 2: the same, with the hyperbola osculating at pericynthion on
+	// the full dynamics (Earth's pull bends the approach on the way in).
+	{
+		const double step[2] = {0.05, 0.05}, tol[2] = {300, 300};
+		bool ok = Newton<2>([&](const double* p, double* out) {
+			State st = s;
+			st.v += radial * p[0] + normal * p[1];
+			Vec3 S, B;
+			double vinf, jdn;
+			if (!ApproachBPlane(st, &S, &B, &vinf, &jdn, true))
+				return false;
+			Vec3 Tn = S.Cross(planeFor(S)).Unit(), Rn = S.Cross(Tn);
+			double bm = rp * std::sqrt(1 + 2 * mu / (rp * vinf * vinf));
+			out[0] = B.Dot(Tn) - bm;
+			out[1] = B.Dot(Rn);
+			if (getenv("TLADIAG"))
+				fprintf(stderr, "TLA P: %.3f %.3f -> %.0f %.0f\n", p[0], p[1],
+					out[0], out[1]);
+			return true;
+		}, y, step, tol, 20);
+		if (!ok)
+			return false;
+	}
+	double x[3] = {0, y[0], y[1]};
+	State fin = s;
+	fin.v += radial * y[0] + normal * y[1];
+	Approach last = ClosestMoonApproach(fin, 5 * kDay, true);
+	if (!last.found)
+		return false;
+	*deltaV = along * x[0] + radial * x[1] + normal * x[2];
+	if (arrival)
+		*arrival = last;
 	return true;
 }
 

@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace flight {
 
@@ -984,6 +985,235 @@ std::unique_ptr<Procedure>
 AutoCrew::Landing(double pdi)
 {
 	return std::unique_ptr<Procedure>(new LandingProcedure(pdi));
+}
+
+
+// ---------------------------------------------------------------------------
+// Transposition and docking
+
+
+namespace {
+
+class DockingProcedure : public Procedure {
+public:
+	explicit DockingProcedure(double start) : fStart(start) {}
+	std::string Name() const override { return "Transposition and docking"; }
+	double WakeGET(FlightSim&) const override { return fStart; }
+	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
+
+private:
+	// RHC/THC commands to point +X along `want` and to fly the probe to
+	// the drogue at `closing` m/s.
+	void _Point(FlightSim& f, const Vec3& want, double deadband);
+	void _Translate(FlightSim& f, const FlightSim::DockingTarget& t,
+		double closing, double standoff);
+
+	double fStart;
+	int fState = 0;
+	double fTimer = 0;
+};
+
+
+void
+DockingProcedure::_Point(FlightSim& f, const Vec3& want, double deadband)
+{
+	gnc::CMPGNCS& pg = f.CMPGNCS();
+	Vehicle& v = f.CSMVehicle();
+	Vec3 xd = v.ToBody(want.Unit());
+	Vec3 axis = Vec3(1, 0, 0).Cross(xd);       // body rotation wanted
+	double s = axis.Length();
+	double angle = std::atan2(s, xd.x);
+	Vec3 err = s > 1e-9 ? axis * (angle / s) : Vec3();
+	auto cmd = [&](double e, double rate) {
+		// Drive at the DAP's rate; let go as the error closes, early
+		// enough for the rate to die out.
+		double lead = rate * 6.0;
+		if (e > deadband && !(rate > 0 && e < lead))
+			return 1.0;
+		if (e < -deadband && !(rate < 0 && -e < -lead))
+			return -1.0;
+		return 0.0;
+	};
+	pg.panel.rhc = Vec3(0, cmd(err.y, v.rates.y), cmd(err.z, v.rates.z));
+}
+
+
+void
+DockingProcedure::_Translate(FlightSim& f, const FlightSim::DockingTarget& t,
+	double closing, double standoff)
+{
+	// Fly the probe down the target's docking axis: null the offset from
+	// the axis line, then close along it.
+	gnc::CMPGNCS& pg = f.CMPGNCS();
+	Vehicle& v = f.CSMVehicle();
+	Vec3 a = t.axis.Unit();
+	Vec3 d = t.probe - t.drogue;
+	double along = d.Dot(a);
+	Vec3 perp = d - a * along;
+	double lateral = perp.Length();
+	Vec3 want = perp * -0.06;
+	if (want.Length() > 0.15)
+		want = want.Unit() * 0.15;
+	bool lined = lateral < 0.15 + 0.03 * std::max(0.0, along);
+	if (lined)
+		want += a * -closing;
+	else if (along < standoff)
+		want += a * 0.05;
+	Vec3 rel = v.velocity - t.drogueVelocity;
+	Vec3 e = v.ToBody(want - rel);
+	const double band = 0.01;
+	auto thc = [&](double ev) { return ev > band ? 1 : ev < -band ? -1 : 0; };
+	pg.panel.thc[0] = thc(e.x);
+	pg.panel.thc[1] = thc(e.y);
+	pg.panel.thc[2] = thc(e.z);
+	static double lastDiag = 0;
+	if (std::getenv("DOCKDIAG") && f.GET() - lastDiag > 20) {
+		lastDiag = f.GET();
+		std::printf("      dock: along %.2f lateral %.2f  rel %.3f %.3f %.3f  want %.3f %.3f %.3f\n",
+			along, lateral, rel.x, rel.y, rel.z, want.x, want.y, want.z);
+	}
+}
+
+
+bool
+DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
+{
+	DSKYDriver& d = c.cmc;
+	gnc::CMPGNCS& pg = f.CMPGNCS();
+	fTimer += dt;
+	FlightSim::DockingTarget t;
+	switch (fState) {
+		case 0: {
+			// DAP for the CSM alone, platform and state vector as they are.
+			gnc::PadLoader& pad = f.CMCPad();
+			double sm = 0;
+			for (const Module& m : f.CSMVehicle().Modules())
+				if (m.name == "Command Module" || m.name == "Service Module")
+					sm += m.Mass();
+			pad.Single("CSMMASS", sm, -16);
+			pad.Single("LEMMASS", 0, -16);
+			pad.Octal("DAPDATR1", 011103);   // CSM alone, 2 deg/s maneuvers
+			pg.panel.scContCMC = true;
+			pg.panel.mode = gnc::CMPanel::MODE_AUTO;
+			d.Type("V37E00E");
+			fState = 1;
+			fTimer = 0;
+			break;
+		}
+		case 1:
+			if (!d.Idle() || fTimer < 2)
+				break;
+			d.Type("V48E");
+			fState = 2;
+			fTimer = 0;
+			break;
+		case 2:
+			if (!d.Idle() || fTimer < 1)
+				break;
+			if (d.Flashing() && d.StableFor() > 0.8
+					&& (d.VerbNoun().substr(2) == "46"
+						|| d.VerbNoun().substr(2) == "47"
+						|| d.VerbNoun().substr(2) == "48")) {
+				d.Type("P");
+				fTimer = 0;
+				break;
+			}
+			if (fTimer > 2) {
+				d.Type("V46E");
+				fState = 3;
+				fTimer = 0;
+			}
+			break;
+		case 3:
+			if (!d.Idle() || fTimer < 3)
+				break;
+			if (f.BoosterAttached()) {
+				f.SeparateCSMFromBooster();
+				pg.panel.sivbSeparated = true;
+				c.Report("CSM/S-IVB separation");
+			}
+			pg.panel.thc[0] = 1;   // a couple of seconds of +X: about 0.3 m/s
+			fState = 4;
+			fTimer = 0;
+			break;
+		case 4:   // back away a few seconds of +X
+			if (fTimer > 2) {
+				pg.panel.thc[0] = 0;
+				c.Report("Turning around");
+				fState = 5;
+				fTimer = 0;
+			}
+			break;
+		case 5: {   // pitch around to face the LM
+			if (!f.Docking(&t)) {
+				status = "no docking target";
+				failed = true;
+				return true;
+			}
+			Vec3 los = t.drogue - t.probe;
+			_Point(f, -t.axis, 1.5 * kDeg);
+			Vec3 x = f.CSMVehicle().ToInertial(Vec3(1, 0, 0));
+			(void)los;
+			if (x.Dot(-t.axis.Unit()) > std::cos(3 * kDeg)
+					&& f.CSMVehicle().rates.Length() < 0.2 * kDeg) {
+				c.Report("Lined up on the LM");
+				fState = 6;
+				fTimer = 0;
+			}
+			if (fTimer > 900) {
+				status = "never turned around";
+				failed = true;
+				pg.panel.rhc = Vec3();
+				return true;
+			}
+			break;
+		}
+		case 6: {   // close on the drogue
+			if (!f.Docking(&t)) {
+				status = "lost the target";
+				failed = true;
+				return true;
+			}
+			double range = (t.drogue - t.probe).Length();
+			_Point(f, -t.axis, 0.7 * kDeg);
+			double closing = range > 10 ? 0.25 : range > 3 ? 0.12 : 0.08;
+			_Translate(f, t, closing, 5.0);
+			if (range < 0.33) {
+				if (f.DockToLM()) {
+					pg.panel.thc[0] = pg.panel.thc[1] = pg.panel.thc[2] = 0;
+					pg.panel.rhc = Vec3();
+					c.Report("Capture, hard dock");
+					fState = 7;
+					fTimer = 0;
+				}
+			}
+			if (fTimer > 3600) {
+				status = "no capture";
+				failed = true;
+				pg.panel.thc[0] = pg.panel.thc[1] = pg.panel.thc[2] = 0;
+				pg.panel.rhc = Vec3();
+				return true;
+			}
+			break;
+		}
+		case 7:   // extraction: back the LM out of the SLA
+			pg.panel.thc[0] = fTimer < 4 ? -1 : 0;
+			if (fTimer > 30) {
+				pg.panel.thc[0] = 0;
+				return true;
+			}
+			break;
+	}
+	return false;
+}
+
+}  // namespace
+
+
+std::unique_ptr<Procedure>
+AutoCrew::TransposeAndDock(double start)
+{
+	return std::unique_ptr<Procedure>(new DockingProcedure(start));
 }
 
 }  // namespace flight

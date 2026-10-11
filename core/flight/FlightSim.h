@@ -143,6 +143,13 @@ public:
 	// Docking geometry for the approach display: probe-to-drogue distance,
 	// closing speed, and misalignment.
 	bool DockingGeometry(double* range, double* rate, double* angle) const;
+	// The same in vectors (inertial): the target drogue's position and
+	// velocity, the target's docking axis (pointing out of the drogue), and
+	// the CSM probe tip.
+	struct DockingTarget {
+		sim::Vec3 drogue, drogueVelocity, axis, probe;
+	};
+	bool Docking(DockingTarget* target) const;
 
 	// Crew transfer between spacecraft (2 to the LM for the landing).
 	int CrewInCM() const { return fCrewInCM; }

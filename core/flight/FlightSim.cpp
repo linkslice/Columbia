@@ -1059,6 +1059,29 @@ FlightSim::JettisonStage(const std::string& module, double separation)
 
 
 bool
+FlightSim::Docking(DockingTarget* out) const
+{
+	const Vehicle* target = nullptr;
+	Vec3 local;
+	if (fLMInSLA && fBooster) {
+		target = fBooster.get();
+		local = kLMInSLA + kLMDrogue;
+	} else if (fLM && !fLMDocked) {
+		target = fLM.get();
+		local = kLMDrogue;
+	}
+	if (target == nullptr)
+		return false;
+	out->drogue = target->PointPosition(local);
+	out->drogueVelocity = target->velocity
+		+ target->ToInertial(target->rates.Cross(local - target->CenterOfMass()));
+	out->axis = target->ToInertial(Vec3(1, 0, 0));
+	out->probe = fCSM->PointPosition(kCMProbe);
+	return true;
+}
+
+
+bool
 FlightSim::DockingGeometry(double* range, double* rate, double* angle) const
 {
 	const Vehicle* target = nullptr;

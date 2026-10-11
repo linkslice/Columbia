@@ -341,6 +341,48 @@ LandingRun(const std::string& ropes, int mission)
 	return ok;
 }
 
+bool
+DockRun(const std::string& ropes, int mission)
+{
+	std::printf("Transposition and docking (in Earth orbit):\n");
+	FlightSim f(*FindMission(mission), ropes);
+	std::string err;
+	if (!f.Start(StartPoint::EarthOrbit, &err)) {
+		std::printf("  %s\n", err.c_str());
+		return false;
+	}
+	AutoCrew crew(f);
+	crew.Install();
+	Echo(f, crew);
+	crew.Add(AutoCrew::TransposeAndDock(f.GET() + 30));
+	double t0 = f.GET();
+	auto last = std::make_shared<double>(0);
+	f.stepHooks.push_back([last](FlightSim& sim, double) {
+		if (sim.GET() - *last < 20) return;
+		*last = sim.GET();
+		double range, rate, angle;
+		if (sim.DockingGeometry(&range, &rate, &angle)) {
+			const gnc::CMPanel& p = sim.CMPGNCS().panel;
+			std::printf("      %.0f range %.2f m rate %.3f m/s angle %.1f deg  rhc %.0f %.0f thc %d %d %d rates %.2f %.2f %.2f\n",
+				sim.GET(), range, rate, angle, p.rhc.y, p.rhc.z, p.thc[0], p.thc[1], p.thc[2],
+				sim.CSMVehicle().rates.x / kDeg, sim.CSMVehicle().rates.y / kDeg,
+				sim.CSMVehicle().rates.z / kDeg);
+		}
+	});
+	while (crew.Busy() && !f.Lost() && f.GET() < t0 + 4000)
+		f.Run(1.0);
+	double fuel = 0;
+	for (const Module& m : f.CSMVehicle().Modules())
+		if (m.name == "Service Module")
+			for (size_t i = 1; i < m.tanks.size(); i++)
+				fuel += m.tanks[i].mass;
+	bool ok = f.LMDocked() && !f.Lost();
+	std::printf("  docked %d after %.0f s, SM RCS left %.0f kg\n", f.LMDocked(),
+		f.GET() - t0, fuel);
+	std::printf("  %s\n", ok ? "DOCKING OK" : "DOCKING FAILED");
+	return ok;
+}
+
 }  // namespace
 
 
@@ -355,6 +397,8 @@ main(int argc, char** argv)
 		failures += !TEI(ropes, mission);
 	if (which == "entry" || which == "all")
 		failures += !EntryRun(ropes, mission);
+	if (which == "dock" || which == "all")
+		failures += !DockRun(ropes, mission);
 	if (which == "landing" || which == "all")
 		failures += !LandingRun(ropes, mission);
 	std::printf(failures ? "AUTOCREW FAILED (%d)\n" : "AUTOCREW OK\n", failures);

@@ -117,6 +117,10 @@ public:
 	static std::unique_ptr<Procedure> Entry(double splashLat, double splashLon);
 	// The LM's powered descent: P63, P64, P65 automatic to touchdown.
 	static std::unique_ptr<Procedure> Landing(double pdiGET);
+	// Transposition, docking and extraction after TLI (or any CSM-active
+	// docking with a free LM): separate, turn around, close on the drogue
+	// with the hand controllers, dock, back the LM out.
+	static std::unique_ptr<Procedure> TransposeAndDock(double startGET);
 	// Just keys (e.g. "V37E00E") into the CMC or LGC.
 	static std::unique_ptr<Procedure> Keys(bool lgc, const std::string& keys,
 		double atGET = 0);

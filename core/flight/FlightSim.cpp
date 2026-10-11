@@ -457,7 +457,14 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 	load.lmMass = fLM ? fLM->Mass() : 15000;
 	load.csmMass = fLM ? fCSM->Mass() : fCSM->Mass() - 15000;
 	load.onSurface = fLMLanded;
-	load.descentStage = !fLMAscentOnly;
+	// On the surface the LGC treats the LM as the ascent stage (the
+	// landing program sets APSFLAG); the crew's V48 masses are ascent ones.
+	load.descentStage = !fLMAscentOnly && !fLMLanded;
+	if (fLMLanded && fLM) {
+		const Module* a = fLM->FindModule("LM ascent stage");
+		if (a)
+			load.lmMass = a->Mass();
+	}
 	gnc::LoadLuminaryMission(p, load);
 	gnc::SetComputerClock(c, fGET);
 	p.Octal("DAPBOOLS", fLMDocked ? 002102 : 002002);

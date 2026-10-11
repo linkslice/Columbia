@@ -412,7 +412,7 @@ AscentRun(const std::string& ropes, int mission)
 			if (*last != buf) {
 				*last = buf;
 				gnc::LMPGNCS* pg = sim.LMPGNCS();
-				std::printf("      %.1f LGC %s  arm %d aps %d ch11 %05o FAILREG %05o %05o\n", sim.GET(), buf,
+				std::printf("      %.1f LGC %s  rates %.2f %.2f %.2f jets %03o %03o arm %d aps %d ch11 %05o FAILREG %05o %05o\n", sim.GET(), buf, sim.LMVehicle()->rates.x / kDeg, sim.LMVehicle()->rates.y / kDeg, sim.LMVehicle()->rates.z / kDeg, sim.LMPGNCS()->JetBits(5), sim.LMPGNCS()->JetBits(6),
 					(int)pg->panel.engineArm, pg->AscentEngineOn(), sim.LGC()->Channel(011),
 					sim.LGCPad()->Word("FAILREG", 0), sim.LGCPad()->Word("FAILREG", 2));
 			}
@@ -422,12 +422,27 @@ AscentRun(const std::string& ropes, int mission)
 	while (!f.Lost() && crew.Busy() && f.GET() < ms.plan.liftoff + 1500)
 		f.Advance(1.0);
 	f.Run(5);
+	if (std::getenv("RENDEZVOUS") && f.LMVehicle()) {
+		crew.Add(AutoCrew::Rendezvous());
+		crew.Add(AutoCrew::TransposeAndDock(0, false));
+		auto last = std::make_shared<double>(0);
+		f.stepHooks.push_back([last](FlightSim& sim, double) {
+			if (!sim.LMVehicle() || sim.GET() - *last < 120) return;
+			*last = sim.GET();
+			Vec3 r = sim.CSMVehicle().position - sim.LMVehicle()->position;
+			Vec3 v = sim.CSMVehicle().velocity - sim.LMVehicle()->velocity;
+			std::printf("      %.0f range %.0f m, rel %.2f m/s\n", sim.GET(), r.Length(), v.Length());
+		});
+		while (!f.Lost() && crew.Busy() && f.GET() < ms.plan.liftoff + 5 * 3600)
+			f.Advance(1.0);
+		std::printf("  docked %d at GET %.0f\n", f.LMDocked(), f.GET());
+	}
 	bool ok = false;
-	if (f.LMVehicle()) {
-		Situation s = f.Situate(*f.LMVehicle());
+	if (f.LMVehicle() || f.LMDocked()) {
+		Situation s = f.LMVehicle() ? f.Situate(*f.LMVehicle()) : f.Situate(f.CSMVehicle());
 		std::printf("  LM orbit %.1f x %.1f nmi (Apollo 11: 47.3 x 9.4)\n",
 			s.apoapsis / 1852, s.periapsis / 1852);
-		{
+		if (f.LMVehicle()) {
 			Vec3 rn, vn;
 			f.LGCPad()->ReadVector("RN", -24, &rn);
 			f.LGCPad()->ReadVector("VN", -7, &vn);
@@ -439,7 +454,8 @@ AscentRun(const std::string& ropes, int mission)
 			std::printf("  LGC |R| %.0f vs %.0f, |V| %.2f vs %.2f, radial %.2f vs %.2f\n",
 				rn.Length(), rt.Length(), vn.Length(), vt.Length(), vn.Dot(rn.Unit()), vt.Dot(rt.Unit()));
 		}
-		ok = s.periapsis > 10000 && !f.Lost();
+		ok = s.periapsis > 10000 && !f.Lost()
+			&& (!std::getenv("RENDEZVOUS") || f.LMDocked());
 	}
 	std::printf("  %s\n", ok ? "ASCENT OK" : "ASCENT FAILED");
 	return ok;

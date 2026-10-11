@@ -996,8 +996,10 @@ namespace {
 
 class DockingProcedure : public Procedure {
 public:
-	explicit DockingProcedure(double start) : fStart(start) {}
-	std::string Name() const override { return "Transposition and docking"; }
+	DockingProcedure(double start, bool transposition)
+		: fStart(start), fTransposition(transposition) {}
+	std::string Name() const override
+		{ return fTransposition ? "Transposition and docking" : "Docking"; }
 	double WakeGET(FlightSim&) const override { return fStart; }
 	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
 
@@ -1009,6 +1011,7 @@ private:
 		double closing, double standoff);
 
 	double fStart;
+	bool fTransposition;
 	int fState = 0;
 	double fTimer = 0;
 };
@@ -1127,6 +1130,11 @@ DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 		case 3:
 			if (!d.Idle() || fTimer < 3)
 				break;
+			if (!fTransposition) {
+				fState = 5;
+				fTimer = 0;
+				break;
+			}
 			if (f.BoosterAttached()) {
 				f.SeparateCSMFromBooster();
 				pg.panel.sivbSeparated = true;
@@ -1197,6 +1205,8 @@ DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			break;
 		}
 		case 7:   // extraction: back the LM out of the SLA
+			if (!fTransposition)
+				return true;
 			pg.panel.thc[0] = fTimer < 4 ? -1 : 0;
 			if (fTimer > 30) {
 				pg.panel.thc[0] = 0;
@@ -1211,9 +1221,9 @@ DockingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 
 
 std::unique_ptr<Procedure>
-AutoCrew::TransposeAndDock(double start)
+AutoCrew::TransposeAndDock(double start, bool transposition)
 {
-	return std::unique_ptr<Procedure>(new DockingProcedure(start));
+	return std::unique_ptr<Procedure>(new DockingProcedure(start, transposition));
 }
 
 
@@ -1277,7 +1287,9 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			if (fLit && !aps && get > fTIG + 60) {
 				c.Report("Insertion");
 				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
-				return true;
+				fState = 3;
+				fTimer = 0;
+				break;
 			}
 			// "Abort stage, engine arm ascent, proceed."
 			if (!fStaged && get > fTIG - 8) {
@@ -1317,6 +1329,40 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			}
 			break;
 		}
+		case 3:   // residuals (N85): PRO through, then P00 and the DAP
+			if (!d.Idle() || fTimer < 3)
+				break;
+			if (d.Flashing() && d.StableFor() > 0.8 && d.VerbNoun().substr(0, 2) != "37") {
+				d.Type("P");
+				fTimer = 0;
+				break;
+			}
+			if (fTimer > 4) {
+				d.SelectProgram(0);
+				fState = 4;
+				fTimer = 0;
+			}
+			break;
+		case 4:
+			if (!d.Idle() || fTimer < 3)
+				break;
+			d.Type("V48E");
+			fState = 5;
+			fTimer = 0;
+			break;
+		case 5:
+			if (!d.Idle() || fTimer < 1)
+				break;
+			if (d.Flashing() && d.StableFor() > 0.8
+					&& (d.VerbNoun().substr(2) == "46" || d.VerbNoun().substr(2) == "47"
+						|| d.VerbNoun().substr(2) == "48")) {
+				d.Type("P");
+				fTimer = 0;
+				break;
+			}
+			if (fTimer > 3)
+				return true;
+			break;
 	}
 	return false;
 }
@@ -1328,6 +1374,270 @@ std::unique_ptr<Procedure>
 AutoCrew::Ascent(double tig)
 {
 	return std::unique_ptr<Procedure>(new AscentProcedure(tig));
+}
+
+
+// ---------------------------------------------------------------------------
+// Rendezvous (LM active)
+
+
+namespace {
+
+class RendezvousProcedure : public Procedure {
+public:
+	std::string Name() const override { return "Rendezvous"; }
+	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
+	double WakeGET(FlightSim& f) const override;
+
+private:
+	bool _Plan(FlightSim& f);
+	bool _Burn(FlightSim& f, double dt);       // null fDVLeft with the THC
+	bool _Lambert(FlightSim& f, Vec3* dv);
+	void _PointLM(FlightSim& f, const Vec3& want);
+
+	int fState = 0;
+	double fTPI = 0, fTPF = 0;
+	Vec3 fDVLeft;
+	int fMidcourse = 0;
+	double fTimer = 0;
+};
+
+
+double
+RendezvousProcedure::WakeGET(FlightSim& f) const
+{
+	if (fState >= 1 && fState <= 2 && fTPI > 0)
+		return fTPI - 120;
+	return f.GET();
+}
+
+
+// Moon-relative states now and at a later time.
+static void
+Relative(FlightSim& f, const Vehicle& v, double get, Vec3* r, Vec3* vel)
+{
+	State s{v.position, v.velocity, f.JulianDate()};
+	State at = get > f.GET() + 0.01 ? Propagate(s, get - f.GET()) : s;
+	*r = at.r - MoonPos(at.jd);
+	*vel = at.v - MoonVel(at.jd);
+}
+
+
+bool
+RendezvousProcedure::_Plan(FlightSim& f)
+{
+	// TPI: the CSM 26.6 degrees above the LM's local horizontal, ahead.
+	Vehicle& lm = *f.LMVehicle();
+	Vehicle& csm = f.CSMVehicle();
+	double best = -1, prevE = 0;
+	for (double t = f.GET() + 300; t < f.GET() + 4 * 7200; t += 20) {
+		Vec3 rl, vl, rc, vc;
+		Relative(f, lm, t, &rl, &vl);
+		Relative(f, csm, t, &rc, &vc);
+		Vec3 los = (rc - rl).Unit();
+		Vec3 up = rl.Unit();
+		double e = std::asin(Clamp(los.Dot(up), -1, 1)) / kDeg;
+		bool ahead = los.Dot(vl) > 0;
+		if (ahead && t > f.GET() + 320 && prevE < 26.6 && e >= 26.6) {
+			best = t;
+			break;
+		}
+		prevE = ahead ? e : -90;
+	}
+	if (best < 0)
+		return false;
+	fTPI = best;
+	Vec3 rc, vc;
+	Relative(f, csm, fTPI, &rc, &vc);
+	double period = 2 * M_PI * std::sqrt(std::pow(rc.Length(), 3) / world::kMuMoon);
+	fTPF = fTPI + period * 130.0 / 360.0;
+	return true;
+}
+
+
+bool
+RendezvousProcedure::_Lambert(FlightSim& f, Vec3* dv)
+{
+	Vehicle& lm = *f.LMVehicle();
+	Vec3 rl, vl, rc, vc;
+	Relative(f, lm, f.GET(), &rl, &vl);
+	Relative(f, f.CSMVehicle(), fTPF, &rc, &vc);
+	Vec3 v1;
+	if (!Lambert(rl, rc, fTPF - f.GET(), world::kMuMoon, rl.Cross(vl), &v1))
+		return false;
+	*dv = v1 - vl;
+	return true;
+}
+
+
+bool
+RendezvousProcedure::_Burn(FlightSim& f, double)
+{
+	// Translation burn on the RCS: fire each body axis until its share of
+	// the delta-V is in (attitude held by the DAP).
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	Vehicle& lm = *f.LMVehicle();
+	fDVLeft -= lm.SensedDeltaV();
+	Vec3 b = lm.ToBody(fDVLeft);
+	const double band = 0.03;
+	pg->panel.thc[0] = b.x > band ? 1 : b.x < -band ? -1 : 0;
+	pg->panel.thc[1] = b.y > band ? 1 : b.y < -band ? -1 : 0;
+	pg->panel.thc[2] = b.z > band ? 1 : b.z < -band ? -1 : 0;
+	static double lastDiag = 0;
+	if (std::getenv("RNDZDIAG") && f.GET() - lastDiag > 5) {
+		lastDiag = f.GET();
+		std::printf("      burn: P%c%c jets %03o %03o rates %.2f %.2f %.2f left %.2f %.2f %.2f thc %d %d %d sensed %.4f\n", f.LGCDSKY().State().prog[0], f.LGCDSKY().State().prog[1], pg->JetBits(5), pg->JetBits(6), lm.rates.x / kDeg, lm.rates.y / kDeg, lm.rates.z / kDeg, b.x, b.y, b.z,
+			pg->panel.thc[0], pg->panel.thc[1], pg->panel.thc[2], lm.SensedDeltaV().Length());
+	}
+	return pg->panel.thc[0] == 0 && pg->panel.thc[1] == 0 && pg->panel.thc[2] == 0;
+}
+
+
+void
+RendezvousProcedure::_PointLM(FlightSim& f, const Vec3& want)
+{
+	// LM +X (the docking hatch) toward the CSM: pitch and roll with the
+	// ACA, letting go early enough for the DAP to stop the rate.
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	Vehicle& lm = *f.LMVehicle();
+	Vec3 xd = lm.ToBody(want.Unit());
+	Vec3 axis = Vec3(1, 0, 0).Cross(xd);
+	double s = axis.Length();
+	double angle = std::atan2(s, xd.x);
+	Vec3 err = s > 1e-9 ? axis * (angle / s) : Vec3();
+	auto cmd = [&](double e, double rate) {
+		double lead = rate * 3.0;
+		if (e > 3 * kDeg && !(rate > 0 && e < lead))
+			return 0.2;
+		if (e < -3 * kDeg && !(rate < 0 && -e < -lead))
+			return -0.2;
+		return 0.0;
+	};
+	pg->panel.aca = Vec3(0, cmd(err.y, lm.rates.y), cmd(err.z, lm.rates.z));
+}
+
+
+bool
+RendezvousProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
+{
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	if (!pg || !f.LMVehicle() || f.Lost()) {
+		status = f.Lost() ? f.LossReason() : "no LM";
+		failed = true;
+		return true;
+	}
+	Vehicle& lm = *f.LMVehicle();
+	Vehicle& csm = f.CSMVehicle();
+	fTimer += dt;
+	double get = f.GET();
+	switch (fState) {
+		case 0:
+			pg->panel.mode = gnc::LMPanel::MODE_AUTO;
+			if (!_Plan(f)) {
+				status = "no TPI opportunity";
+				failed = true;
+				return true;
+			}
+			{
+				char buf[80];
+				std::snprintf(buf, sizeof(buf), "TPI at %.0f, intercept at %.0f",
+					fTPI, fTPF);
+				c.Report(buf);
+			}
+			fState = 1;
+			break;
+		case 1:   // wait for TPI
+			if (get < fTPI)
+				break;
+			if (!_Lambert(f, &fDVLeft)) {
+				status = "TPI Lambert failed";
+				failed = true;
+				return true;
+			}
+			{
+				char buf[64];
+				std::snprintf(buf, sizeof(buf), "TPI: %.1f m/s", fDVLeft.Length());
+				c.Report(buf);
+			}
+			fState = 2;
+			break;
+		case 2:
+			if (_Burn(f, dt)) {
+				fState = 3;
+				fTimer = 0;
+			}
+			break;
+		case 3: {   // coast, midcourses at +12 and +24 minutes
+			double since = get - fTPI;
+			if ((fMidcourse == 0 && since > 720) || (fMidcourse == 1 && since > 1440)) {
+				fMidcourse++;
+				if (_Lambert(f, &fDVLeft)) {
+					char buf[64];
+					std::snprintf(buf, sizeof(buf), "Midcourse %d: %.2f m/s", fMidcourse,
+						fDVLeft.Length());
+					c.Report(buf);
+					fState = 4;
+				}
+			}
+			double range = (csm.position - lm.position).Length();
+			if (range < 1500 || get > fTPF - 240) {
+				c.Report("Braking");
+				fState = 5;
+			}
+			break;
+		}
+		case 4:
+			if (_Burn(f, dt))
+				fState = 3;
+			break;
+		case 5: {   // braking down the line of sight to station keeping
+			Vec3 r = csm.position - lm.position;
+			Vec3 v = csm.velocity - lm.velocity;
+			double range = r.Length();
+			Vec3 u = r / range;
+			double closing = -v.Dot(u);
+			double want = Clamp(range * 0.004, 0.1, 9.0);
+			if (range < 40)
+				want = 0;
+			// Desired relative velocity of the CSM as seen from the LM:
+			// coming in along the line of sight, nothing across it.
+			Vec3 desired = u * -want;
+			Vec3 needed = v - desired;     // change in LM velocity
+			Vec3 b = lm.ToBody(needed);
+			const double band = range < 200 ? 0.03 : 0.15;
+			pg->panel.thc[0] = b.x > band ? 1 : b.x < -band ? -1 : 0;
+			pg->panel.thc[1] = b.y > band ? 1 : b.y < -band ? -1 : 0;
+			pg->panel.thc[2] = b.z > band ? 1 : b.z < -band ? -1 : 0;
+			if (range < 300)
+				_PointLM(f, r);
+			if (range < 45 && v.Length() < 0.06) {
+				pg->panel.thc[0] = pg->panel.thc[1] = pg->panel.thc[2] = 0;
+				pg->panel.aca = Vec3();
+				char buf[64];
+				std::snprintf(buf, sizeof(buf), "Station keeping at %.0f m", range);
+				c.Report(buf);
+				return true;
+			}
+			(void)closing;
+			if (get > fTPF + 3600) {
+				status = "never closed";
+				failed = true;
+				pg->panel.thc[0] = pg->panel.thc[1] = pg->panel.thc[2] = 0;
+				return true;
+			}
+			break;
+		}
+	}
+	return false;
+}
+
+}  // namespace
+
+
+std::unique_ptr<Procedure>
+AutoCrew::Rendezvous()
+{
+	return std::unique_ptr<Procedure>(new RendezvousProcedure());
 }
 
 }  // namespace flight

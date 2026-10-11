@@ -120,10 +120,15 @@ public:
 	// Lunar liftoff: P12 with the PAD's TIG, abort stage, engine arm ascent,
 	// PRO at V99; the LGC flies the ascent to orbit insertion.
 	static std::unique_ptr<Procedure> Ascent(double tig);
+	// LM-active rendezvous after insertion: TPI at the 26.6 degree elevation
+	// angle, two midcourses, braking along the line of sight, station
+	// keeping at the CSM -- then the CMP docks (CSM active).
+	static std::unique_ptr<Procedure> Rendezvous();
 	// Transposition, docking and extraction after TLI (or any CSM-active
 	// docking with a free LM): separate, turn around, close on the drogue
 	// with the hand controllers, dock, back the LM out.
-	static std::unique_ptr<Procedure> TransposeAndDock(double startGET);
+	static std::unique_ptr<Procedure> TransposeAndDock(double startGET,
+		bool transposition = true);
 	// Just keys (e.g. "V37E00E") into the CMC or LGC.
 	static std::unique_ptr<Procedure> Keys(bool lgc, const std::string& keys,
 		double atGET = 0);

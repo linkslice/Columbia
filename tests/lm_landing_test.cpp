@@ -10,6 +10,7 @@
 #include "../core/agc/AGC.h"
 #include "../core/agc/DSKY.h"
 #include "../core/gnc/LMPGNCS.h"
+#include "../core/gnc/MissionPads.h"
 #include "../core/gnc/PadLoads.h"
 #include "../core/gnc/Rope.h"
 #include "../core/sim/MoonScene.h"
@@ -189,6 +190,8 @@ main(int argc, char** argv)
 	run(3.0);
 	gnc::PadLoader pad(agc, rope);
 	gnc::LoadLuminaryInvariants(pad);
+	if (!getenv("NOMISSIONPADS"))
+		std::printf("mission pads: %d words\n", pad.Apply(gnc::MissionPads(11, true)));
 	gnc::LMPadLoad load;
 	load.agcTime = t;
 	load.tland = kTLAND_GET;

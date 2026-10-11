@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Bryan Irvine. MIT License (see LICENSE).
 
 #include "Rope.h"
+#include "MissionPads.h"
 
 #include <cmath>
 #include <cstdio>
@@ -246,6 +247,24 @@ PadLoader::ReadVector(const std::string& name, int scale, sim::Vec3* v) const
 {
 	return ReadDouble(name, scale, &v->x, 0) && ReadDouble(name, scale, &v->y, 2)
 		&& ReadDouble(name, scale, &v->z, 4);
+}
+
+int
+PadLoader::Apply(const PadWord* table)
+{
+	int applied = 0;
+	if (table == nullptr)
+		return 0;
+	size_t missing = fMissing.size();
+	for (const PadWord* w = table; w->name != nullptr; w++) {
+		int bank, offset;
+		if (!_Address(w->name, w->index, &bank, &offset))
+			continue;
+		fComputer.WriteErasable(bank, offset, w->value);
+		applied++;
+	}
+	fMissing.resize(missing);   // other programs' names are expected
+	return applied;
 }
 
 }  // namespace gnc

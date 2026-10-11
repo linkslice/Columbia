@@ -71,6 +71,9 @@ public:
 	bool ReadVector(const std::string& name, int scale, sim::Vec3* v) const;
 	uint16_t Word(const std::string& name, int index = 0) const;
 	bool SetWord(const std::string& name, uint16_t word, int index = 0);
+	// Applies a table of pad-loaded words (see MissionPads.h); names the
+	// program doesn't have are skipped. Returns the number applied.
+	int Apply(const struct PadWord* table);
 
 	// Names that were missing from the program (for diagnostics).
 	const std::vector<std::string>& Missing() const { return fMissing; }

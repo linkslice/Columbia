@@ -1211,9 +1211,9 @@ FlightSim::StageLM()
 	Vehicle descent = fLM->Detach({"LM descent stage"}, Vec3(), Mat3(),
 		fMission.lmCallsign + " descent stage");
 	if (fLMLanded) {
+		// The ascent stage sits on the descent stage (its launch pad)
+		// until the ascent engine lifts it off.
 		descent.landed = true;
-		fLMLanded = false;
-		fLM->landed = false;
 	}
 	fDebris.emplace_back(new Vehicle(descent));
 	fLM->contacts.clear();

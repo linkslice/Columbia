@@ -73,6 +73,7 @@ public:
 
 	// --- State for displays and the simulation ------------------------------
 	bool DescentEngineOn() const { return fEngineLatch; }
+	bool AscentEngineOn() const { return fAPSLatch; }
 	double ThrustCommand() const { return fThrustCommand; }   // N
 	double GimbalPitch() const { return fGimbalPitch; }
 	double GimbalRoll() const { return fGimbalRoll; }

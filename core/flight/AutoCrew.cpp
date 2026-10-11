@@ -1216,4 +1216,118 @@ AutoCrew::TransposeAndDock(double start)
 	return std::unique_ptr<Procedure>(new DockingProcedure(start));
 }
 
+
+// ---------------------------------------------------------------------------
+// Lunar ascent: P12
+
+
+namespace {
+
+class AscentProcedure : public Procedure {
+public:
+	explicit AscentProcedure(double tig) : fTIG(tig) {}
+	std::string Name() const override { return "Lunar ascent"; }
+	double WakeGET(FlightSim&) const override { return fTIG - 900; }
+	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
+
+private:
+	double fTIG;
+	int fState = 0;
+	double fTimer = 0, fLastKey = -100;
+	bool fStaged = false, fLit = false;
+};
+
+
+bool
+AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
+{
+	DSKYDriver& d = c.lgc;
+	fTimer += dt;
+	double get = f.GET();
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	if (!pg || !f.LMVehicle() || !f.LGC()) {
+		status = "no LM";
+		failed = true;
+		return true;
+	}
+	if (f.Lost()) {
+		status = f.LossReason();
+		failed = true;
+		return true;
+	}
+	switch (fState) {
+		case 0:
+			d.Type("V37E00E");
+			fState = 1;
+			fTimer = 0;
+			break;
+		case 1:
+			if (!d.Idle() || fTimer < 2)
+				break;
+			d.SelectProgram(12);
+			fState = 2;
+			fTimer = 0;
+			break;
+		case 2: {
+			bool aps = pg->AscentEngineOn();
+			if (!fLit && aps) {
+				fLit = true;
+				c.Report("Ascent engine on");
+			}
+			if (fLit && !aps && get > fTIG + 60) {
+				c.Report("Insertion");
+				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+				return true;
+			}
+			// "Abort stage, engine arm ascent, proceed."
+			if (!fStaged && get > fTIG - 8) {
+				f.StageLM();
+				pg->panel.engineArm = gnc::LMPanel::ARM_ASCENT;
+				fStaged = true;
+				c.Report("Abort stage; engine arm ascent");
+			}
+			if (!d.Idle() || !d.Flashing() || get - fLastKey < 2
+					|| d.StableFor() < 0.8)
+				break;
+			std::string vn = d.VerbNoun();
+			std::string key;
+			if (vn.substr(2) == "33" && fTimer < 120)
+				key = DSKYDriver::TimeEntry(fTIG) + "P";
+			else if (vn == "5018") {
+				if (ManeuverError(*f.LGCPad(), *f.LGC()) < 2.0)
+					key = "E";
+				else
+					key = "P";
+			} else if (vn.substr(0, 2) == "99") {
+				if (get > fTIG - 6)
+					key = "P";
+			} else if (vn.substr(0, 2) == "06" || vn.substr(0, 2) == "16"
+				|| vn.substr(0, 2) == "50")
+				key = "P";
+			if (!key.empty()) {
+				if (c.verbose)
+					c.Report("Ascent: " + key + " on " + d.Display());
+				d.Type(key);
+				fLastKey = get;
+			}
+			if (get > fTIG + 1200) {
+				status = "no insertion " + d.Display();
+				failed = true;
+				return true;
+			}
+			break;
+		}
+	}
+	return false;
+}
+
+}  // namespace
+
+
+std::unique_ptr<Procedure>
+AutoCrew::Ascent(double tig)
+{
+	return std::unique_ptr<Procedure>(new AscentProcedure(tig));
+}
+
 }  // namespace flight

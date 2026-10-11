@@ -383,6 +383,68 @@ DockRun(const std::string& ropes, int mission)
 	return ok;
 }
 
+bool
+AscentRun(const std::string& ropes, int mission)
+{
+	std::printf("Lunar ascent:\n");
+	const MissionSpec& ms = *FindMission(mission);
+	FlightSim f(ms, ropes);
+	std::string err;
+	if (!f.Start(StartPoint::LunarAscent, &err)) {
+		std::printf("  %s\n", err.c_str());
+		return false;
+	}
+	AutoCrew crew(f);
+	crew.Install();
+	Echo(f, crew);
+	crew.verbose = std::getenv("CREWDIAG") != nullptr;
+	crew.Add(AutoCrew::Ascent(ms.plan.liftoff));
+	{
+		double tig = ms.plan.liftoff;
+		auto last = std::make_shared<std::string>();
+		f.stepHooks.push_back([last, tig](FlightSim& sim, double) {
+			if (sim.GET() < tig - 60 || sim.GET() > tig + 600) return;
+			const agc::DSKYState& d = sim.LGCDSKY().State();
+			char buf[100];
+			std::snprintf(buf, sizeof(buf), "P%c%c V%c%c N%c%c %s%s%s", d.prog[0], d.prog[1],
+				d.verb[0], d.verb[1], d.noun[0], d.noun[1], d.RegisterText(0).c_str(),
+				d.verbNounFlash ? " FL" : "", d.progAlarm ? " PROG" : "");
+			if (*last != buf) {
+				*last = buf;
+				gnc::LMPGNCS* pg = sim.LMPGNCS();
+				std::printf("      %.1f LGC %s  arm %d aps %d ch11 %05o FAILREG %05o %05o\n", sim.GET(), buf,
+					(int)pg->panel.engineArm, pg->AscentEngineOn(), sim.LGC()->Channel(011),
+					sim.LGCPad()->Word("FAILREG", 0), sim.LGCPad()->Word("FAILREG", 2));
+			}
+		});
+	}
+	f.SetWarp(100);
+	while (!f.Lost() && crew.Busy() && f.GET() < ms.plan.liftoff + 1500)
+		f.Advance(1.0);
+	f.Run(5);
+	bool ok = false;
+	if (f.LMVehicle()) {
+		Situation s = f.Situate(*f.LMVehicle());
+		std::printf("  LM orbit %.1f x %.1f nmi (Apollo 11: 47.3 x 9.4)\n",
+			s.apoapsis / 1852, s.periapsis / 1852);
+		{
+			Vec3 rn, vn;
+			f.LGCPad()->ReadVector("RN", -24, &rn);
+			f.LGCPad()->ReadVector("VN", -7, &vn);
+			vn = vn * 100;
+			Mat3 R = f.LMPGNCS()->imu.REFSMMAT();
+			(void)R;
+			Vehicle& lm = *f.LMVehicle();
+			Vec3 rt = lm.position - f.Moon().MoonPosition(), vt = lm.velocity - f.Moon().MoonVelocity();
+			std::printf("  LGC |R| %.0f vs %.0f, |V| %.2f vs %.2f, radial %.2f vs %.2f\n",
+				rn.Length(), rt.Length(), vn.Length(), vt.Length(), vn.Dot(rn.Unit()), vt.Dot(rt.Unit()));
+		}
+		ok = s.periapsis > 10000 && !f.Lost();
+	}
+	std::printf("  %s\n", ok ? "ASCENT OK" : "ASCENT FAILED");
+	return ok;
+}
+
 }  // namespace
 
 
@@ -399,6 +461,8 @@ main(int argc, char** argv)
 		failures += !EntryRun(ropes, mission);
 	if (which == "dock" || which == "all")
 		failures += !DockRun(ropes, mission);
+	if (which == "ascent" || which == "all")
+		failures += !AscentRun(ropes, mission);
 	if (which == "landing" || which == "all")
 		failures += !LandingRun(ropes, mission);
 	std::printf(failures ? "AUTOCREW FAILED (%d)\n" : "AUTOCREW OK\n", failures);

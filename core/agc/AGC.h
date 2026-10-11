@@ -30,9 +30,10 @@ enum Register : uint16_t {
 	REG_CDUX = 032, REG_CDUY = 033, REG_CDUZ = 034,
 	REG_OPTY = 035, REG_OPTX = 036,
 	REG_PIPAX = 037, REG_PIPAY = 040, REG_PIPAZ = 041,
-	REG_INLINK = 045, REG_GYROCTR = 047,
+	REG_RHCP = 042, REG_RHCY = 043, REG_RHCR = 044,
+	REG_INLINK = 045, REG_RNRAD = 046, REG_GYROCTR = 047,
 	REG_CDUXCMD = 050, REG_CDUYCMD = 051, REG_CDUZCMD = 052,
-	REG_OUTLINK = 057
+	REG_THRUST = 055, REG_LEMONM = 056, REG_OUTLINK = 057, REG_ALTM = 060
 };
 
 enum Interrupt {
@@ -93,6 +94,28 @@ public:
 	// --- Counter cells (driven by spacecraft hardware models) -----------
 	void CountUp(uint16_t cell);    // PINC
 	void CountDown(uint16_t cell);  // MINC
+	// Adds a signed number of PINC/MINC counts to a ones-complement
+	// counter (PIPAs, RHC). Returns true if the counter overflowed.
+	bool AddCounts(uint16_t cell, int counts);
+	// Raw access to unswitched cells and counters (CDUs track gimbals in
+	// two's complement and are set directly).
+	uint16_t Cell(uint16_t cell) const { return fErasable[0][cell & 0377]; }
+	void SetCell(uint16_t cell, uint16_t value)
+		{ fErasable[0][cell & 0377] = value & 077777; }
+
+	// --- Erasable memory (pad loads, telemetry) ---------------------------
+	uint16_t ReadErasable(int bank, int offset) const
+		{ return fErasable[bank & 7][offset & 0377]; }
+	void WriteErasable(int bank, int offset, uint16_t value)
+		{ fErasable[bank & 7][offset & 0377] = value & 077777; }
+
+	// --- Peripheral interrupts -------------------------------------------------
+	// A radar word arrives in RNRAD and RADARUPT is requested.
+	void RadarData(uint16_t value);
+	// MSFN uplink: one keycode, sent triply redundant into INLINK.
+	void Uplink(int keycode);
+	// Navigation-panel/LM discretes on channel 16 with KEYRUPT2.
+	void NavKey(uint16_t bits);
 
 	// --- Inspection ------------------------------------------------------
 	uint16_t Erasable(int bank, int offset) const;
@@ -104,6 +127,8 @@ public:
 	bool RestartLight() const { return fRestartLight; }
 	void ClearRestartLight() { fRestartLight = false; }
 	uint32_t RestartCount() const { return fRestarts; }
+	// Interrupts taken per vector since power-on (diagnostics).
+	uint32_t InterruptCount(int which) const { return fRuptCount[which]; }
 
 	// Hardware alarms (night watchman, TC trap, rupt lock). They force a
 	// restart exactly like the real computer. Enabled by default.
@@ -132,6 +157,7 @@ private:
 	bool _InterruptsAllowed() const;
 	void _TakeInterrupt(int which);
 	void _Tick(int mct);
+	void _StealCycles(int mct);
 	void _CounterIncrement(uint16_t cell, int delta, bool* overflow);
 	void _CounterOverflow(uint16_t address);
 	void _Alarm();
@@ -156,6 +182,7 @@ private:
 	bool fInhibit;          // INHINT in effect
 	bool fInISR;            // between interrupt entry and RESUME
 	bool fPendingRupt[RUPT_COUNT];
+	uint32_t fRuptCount[RUPT_COUNT] = {};
 
 	uint64_t fCycles;
 	double fTimerAccum;     // seconds toward the next 10 ms scaler tick

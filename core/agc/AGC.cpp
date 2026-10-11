@@ -272,6 +272,12 @@ Computer::_ReadChannel(int ch)
 		return fErasable[0][REG_Q];
 	if (ch == 7)
 		return fChannels[7] & 0160;
+	if (ch == 3 || ch == 4) {
+		// Master scaler: 1/3200 s per count, 28 bits over two channels.
+		uint64_t counts = uint64_t(fCycles * kMCTSeconds * 3200.0);
+		return ch == 4 ? uint16_t(counts & 037777)
+			: uint16_t((counts >> 14) & 037777);
+	}
 	return ch < 0200 ? SignExtend(fChannels[ch]) : 0;
 }
 
@@ -366,6 +372,47 @@ Computer::_CounterIncrement(uint16_t cell, int delta, bool* overflow)
 }
 
 
+bool
+Computer::AddCounts(uint16_t cell, int counts)
+{
+	bool any = false;
+	while (counts != 0) {
+		bool overflow;
+		_CounterIncrement(cell, counts > 0 ? 1 : -1, &overflow);
+		any = any || overflow;
+		counts += counts > 0 ? -1 : 1;
+	}
+	return any;
+}
+
+
+void
+Computer::RadarData(uint16_t value)
+{
+	fErasable[0][REG_RNRAD] = value & 077777;
+	fPendingRupt[RUPT_RADAR] = true;
+}
+
+
+void
+Computer::Uplink(int keycode)
+{
+	// Each uplinked word carries the 5-bit keycode three times: as is,
+	// complemented, and as is (bits 15-11, 10-6, 5-1).
+	uint16_t c = uint16_t(keycode & 037);
+	fErasable[0][REG_INLINK] = uint16_t((c << 10) | ((~c & 037) << 5) | c);
+	fPendingRupt[RUPT_UP] = true;
+}
+
+
+void
+Computer::NavKey(uint16_t bits)
+{
+	fChannels[016] = bits & 077777;
+	fPendingRupt[RUPT_KEY2] = true;
+}
+
+
 void
 Computer::CountUp(uint16_t cell)
 {
@@ -405,12 +452,12 @@ Computer::_Counters()
 			_CounterIncrement(REG_TIME5, 1, &overflow);
 			if (overflow)
 				fPendingRupt[RUPT_T5] = true;
-			fCycles += 3;
+			_StealCycles(3);
 		} else {
 			_CounterIncrement(REG_TIME4, 1, &overflow);
 			if (overflow)
 				fPendingRupt[RUPT_T4] = true;
-			fCycles += 1;
+			_StealCycles(1);
 		}
 	}
 	while (fDownAccum >= 0.020) {
@@ -431,13 +478,26 @@ Computer::_Counters()
 		} else {
 			fErasable[0][REG_TIME6] = Add15(v, 077776);
 		}
-		fCycles += 1;
+		_StealCycles(1);
 	}
 }
 
 
 // ---------------------------------------------------------------------------
 // Execution
+
+
+// Counter increments steal memory cycles from the program; they take real
+// time, so the scalers advance through them like any other cycle.
+void
+Computer::_StealCycles(int mct)
+{
+	fCycles += mct;
+	double dt = mct * kMCTSeconds;
+	fTimerAccum += dt;
+	fT6Accum += dt;
+	fDownAccum += dt;
+}
 
 
 void
@@ -508,6 +568,7 @@ void
 Computer::_TakeInterrupt(int which)
 {
 	fPendingRupt[which] = false;
+	fRuptCount[which]++;
 	fErasable[0][REG_ZRUPT] = fZ;
 	fErasable[0][REG_BRUPT] = fB;
 	fInISR = true;

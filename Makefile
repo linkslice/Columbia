@@ -96,7 +96,7 @@ $(TESTDIR)/cm_entry: tests/cm_entry_test.cpp $(GNC_SRCS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 .PHONY: flighttest
-flighttest: $(TESTDIR)/lm_landing $(TESTDIR)/csm_burn $(TESTDIR)/cm_entry $(TESTDIR)/flight_test $(TESTDIR)/rtcc_test $(TESTDIR)/launch_test
+flighttest: $(TESTDIR)/lm_landing $(TESTDIR)/csm_burn $(TESTDIR)/cm_entry $(TESTDIR)/flight_test $(TESTDIR)/rtcc_test $(TESTDIR)/launch_test $(TESTDIR)/contingency_test
 	$(TESTDIR)/lm_landing rope Luminary099 | tail -3
 	$(TESTDIR)/csm_burn rope Comanche055 | tail -2
 	$(TESTDIR)/cm_entry rope Comanche055 | tail -2
@@ -104,6 +104,7 @@ flighttest: $(TESTDIR)/lm_landing $(TESTDIR)/csm_burn $(TESTDIR)/cm_entry $(TEST
 	$(TESTDIR)/flight_test rope 11 | tail -1
 	$(TESTDIR)/launch_test rope 11 1 | tail -3
 	$(TESTDIR)/launch_test rope 7 | tail -2
+	$(TESTDIR)/contingency_test rope | tail -1
 
 # Renders the real DSKY and trajectory views to PNGs through a small Cairo
 # stand-in for the Interface Kit (needs cairo; useful off-Haiku).
@@ -128,5 +129,9 @@ $(TESTDIR)/rtcc_test: tests/rtcc_test.cpp $(FLIGHT_SRCS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 $(TESTDIR)/launch_test: tests/launch_test.cpp $(FLIGHT_SRCS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(TESTDIR)/contingency_test: tests/contingency_test.cpp $(FLIGHT_SRCS)
 	@mkdir -p $(TESTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^

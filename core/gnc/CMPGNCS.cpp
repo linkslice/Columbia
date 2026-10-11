@@ -158,7 +158,7 @@ CMPGNCS::_Outputs(double dt)
 	// --- SPS: channel 11 bit 13 through the delta-V thrust switches ----------
 	bool cmcOn = panel.scContCMC && (ch11 & Bit(13));
 	fSPSOn = panel.spsArmed && !panel.spsStop && !spsFailed
-		&& (cmcOn || panel.spsStart);
+		&& (cmcOn || panel.spsStart || (spsThrustShortA && panel.spsBankA));
 
 	// --- TVC: optics CDU error counters as actuator commands -----------------
 	// Channel 12 bit 2 enables the error counters (clearing them when it

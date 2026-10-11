@@ -89,6 +89,13 @@ public:
 
 	// Failures and hardware faults injected by the simulation.
 	bool lrFailed = false;
+	bool ascentArmBreakerOpen = false;   // Apollo 11's broken breaker
+	// Apollo 11: with the rendezvous radar switch in SLEW/AUTO-TRACK and
+	// the RR CDUs' 800 Hz excitation out of phase with the LGC's, the
+	// shaft and trunnion CDUs hunt continuously, each stealing a counter
+	// cycle at 6.4 kpps -- some 15% of the computer's time.
+	bool rrCDUHunting = false;
+	double huntScale = 1.0;         // test knob
 	bool throttleFailed = false;    // DECA stuck
 	bool jetDriverFailed[16] = {};
 
@@ -118,6 +125,7 @@ private:
 	double fCoarseResidual[3] = {0, 0, 0};
 	double fGyroResidual = 0;
 	bool fGimbalWarning = false;
+	double fHuntResidual = 0;
 
 	// Landing radar.
 	int fLRPosition = 1;

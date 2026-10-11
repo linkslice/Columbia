@@ -114,7 +114,7 @@ FlightSim::FlightSim(const MissionSpec& mission, const std::string& ropeDir)
 	crew.members[2].name = mission.lmPilot;
 	crew.members[2].role = "LMP";
 	lioh.canistersCM = 20;
-	lioh.canistersLM = fHasLM ? 4 : 0;
+	lioh.canistersLM = !fHasLM ? 0 : mission.number >= 15 ? 4 : 2;
 	lioh.activeLife = 36;
 	crew.foodDays = mission.plan.splashdown > 0
 		? mission.plan.splashdown / kDay + 2 : 14;
@@ -959,6 +959,51 @@ FlightSim::SeparateCSMFromBooster()
 }
 
 
+void
+FlightSim::SCEToAux()
+{
+	csmSystems.sceAux = true;
+	if (faults.sceFailed) {
+		faults.sceFailed = false;
+		Log(LogEntry::Crew, "SCE to AUX: the instrumentation is back");
+	}
+}
+
+
+void
+FlightSim::ResetFuelCells()
+{
+	int n = 0;
+	for (FuelCell& fc : csmSystems.fuelCell)
+		if (!fc.failed && !fc.online) {
+			fc.online = true;
+			n++;
+		}
+	if (n > 0)
+		Log(LogEntry::Crew, "Fuel cells reconnected to the main buses");
+}
+
+
+void
+FlightSim::PenInBreaker()
+{
+	if (fLMPGNCS && fLMPGNCS->ascentArmBreakerOpen) {
+		fLMPGNCS->ascentArmBreakerOpen = false;
+		Log(LogEntry::Crew, "Engine arm breaker pushed in with a felt-tip pen");
+	}
+}
+
+
+void
+FlightSim::RRModeToLGC()
+{
+	if (fLMPGNCS && fLMPGNCS->rrCDUHunting) {
+		fLMPGNCS->rrCDUHunting = false;
+		Log(LogEntry::Crew, "Rendezvous radar mode switch to LGC");
+	}
+}
+
+
 Vec3
 FlightSim::ParkingOrbitNormal() const
 {
@@ -1044,6 +1089,18 @@ FlightSim::DockToLM()
 		return false;
 	if (range > 0.35 || std::fabs(rate) > 0.5 || angle > 10)
 		return false;
+	if (faults.probeMisses > 0) {
+		faults.probeMisses--;
+		Log(LogEntry::Caution, "Contact, but no capture: the probe latches "
+			"did not engage");
+		// The probe pushes the two apart again.
+		Vehicle* target = fLMInSLA ? fBooster.get() : fLM.get();
+		if (target) {
+			Vec3 axis = fCSM->ToInertial(Vec3(1, 0, 0));
+			fCSM->velocity -= axis * 0.1;
+		}
+		return false;
+	}
 	Vec3 off;
 	Mat3 rot;
 	_DockLMGeometry(&off, &rot);
@@ -1132,6 +1189,13 @@ FlightSim::StageLM()
 	}
 	fDebris.emplace_back(new Vehicle(descent));
 	fLM->contacts.clear();
+	if (faults.stagingGyration) {
+		// The AGS, left in AUTO, swings the ascent stage to point at the
+		// CSM the instant it's free.
+		fLM->rates += Vec3(0.35, -0.25, 0.5);
+		Log(LogEntry::Warning, "Ascent stage gyrating after staging");
+		faults.stagingGyration = false;
+	}
 	fLMAscentOnly = true;
 	lmSystems.descentStage = false;
 	_UpdatePGNCSAttachments();
@@ -1361,7 +1425,8 @@ FlightSim::_Step(double dt)
 			world::Atmosphere a = world::Atmosphere::At(alt);
 			v.ambientPressure = a.pressure;
 			if (isCM && (fDrogues || fMains)) {
-				double cdA = fMains ? 3 * 0.8 * 0.25 * M_PI * 25.5 * 25.5
+				double cdA = fMains ? (faults.mainChuteFouled ? 2 : 3)
+					* 0.8 * 0.25 * M_PI * 25.5 * 25.5
 					: 2 * 0.6 * 0.25 * M_PI * 5 * 5;
 				v.AddExternalForce(air * (-0.5 * a.density * air.Length() * cdA),
 					v.rates * -2000.0);

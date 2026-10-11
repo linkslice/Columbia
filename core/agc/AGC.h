@@ -98,6 +98,9 @@ public:
 	// Adds a signed number of PINC/MINC counts to a ones-complement
 	// counter (PIPAs, RHC). Returns true if the counter overflowed.
 	bool AddCounts(uint16_t cell, int counts);
+	// Counter traffic that changes nothing but still takes memory cycles
+	// (e.g. a CDU hunting back and forth): `mct` cycles stolen.
+	void StealCycles(int mct);
 	// Raw access to unswitched cells and counters (CDUs track gimbals in
 	// two's complement and are set directly).
 	uint16_t Cell(uint16_t cell) const { return fErasable[0][cell & 0377]; }

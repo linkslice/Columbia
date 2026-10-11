@@ -145,6 +145,8 @@ main(int argc, char** argv)
 	lm.attitude = Quat::FromMatrix(Mat3::Columns(xb, yb, zb));
 
 	gnc::LMPGNCS pgncs(agc, lm);
+	pgncs.rrCDUHunting = getenv("RRHUNT") != nullptr;
+	if (getenv("RRHUNT")) pgncs.huntScale = atof(getenv("RRHUNT"));
 	Mat3 refsmmat = Mat3::Rows(Shat, downrange.Cross(Shat), downrange);
 	pgncs.imu.Align(refsmmat);
 
@@ -314,6 +316,18 @@ main(int argc, char** argv)
 					pgncs.panel.aca.x = 0;
 					yaw = 2;
 					std::printf("%s  crew: windows up\n", GET(t).c_str());
+				}
+			}
+		}
+		{
+			static uint16_t lastAlarm = 0;
+			static double lastCheck = 0;
+			if (t - lastCheck > 0.5) {
+				lastCheck = t;
+				uint16_t a = pad.Word("FAILREG", 2);
+				if (a != lastAlarm) {
+					std::printf("%s  ALARM %04o\n", GET(t).c_str(), a);
+					lastAlarm = a;
 				}
 			}
 		}

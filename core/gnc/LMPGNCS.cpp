@@ -188,6 +188,12 @@ LMPGNCS::Step(double dt, const RadarScene* scene)
 	fComputer.AddCounts(agc::REG_PIPAZ, counts[2]);
 
 	_Inputs();
+	if (rrCDUHunting) {
+		fHuntResidual += 2 * 6400.0 * huntScale * dt;
+		int n = int(fHuntResidual);
+		fHuntResidual -= n;
+		fComputer.StealCycles(n);
+	}
 	fComputer.Run(dt);
 	_Outputs(dt, scene);
 }
@@ -202,7 +208,8 @@ LMPGNCS::_Outputs(double dt, const RadarScene* scene)
 
 	// --- Engine on/off latch (channel 11 bits 13 and 14) ----------------------
 	bool armedDescent = panel.engineArm == LMPanel::ARM_DESCENT;
-	bool armedAscent = panel.engineArm == LMPanel::ARM_ASCENT;
+	bool armedAscent = panel.engineArm == LMPanel::ARM_ASCENT
+		&& !ascentArmBreakerOpen;
 	bool lgcOn = panel.pgnsControl && (ch11 & Bit(13));
 	bool lgcOff = (ch11 & Bit(14)) != 0;
 	if (lgcOn || panel.engineStart) {
@@ -418,6 +425,8 @@ LMPGNCS::_Radar(double dt, const RadarScene* scene)
 	uint16_t select = ch13 & 017;
 	if ((select & Bit(4)) && !(fRadarSelect & Bit(4)))
 		fRadarTimer = 0.08;
+	else if (!(select & Bit(4)))
+		fRadarTimer = -1;      // read cancelled (e.g. by a restart)
 	fRadarSelect = select;
 	if (fRadarTimer >= 0) {
 		fRadarTimer -= dt;

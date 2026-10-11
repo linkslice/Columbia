@@ -379,10 +379,20 @@ Computer::AddCounts(uint16_t cell, int counts)
 	while (counts != 0) {
 		bool overflow;
 		_CounterIncrement(cell, counts > 0 ? 1 : -1, &overflow);
+		StealCycles(1);     // every increment is a memory cycle
 		any = any || overflow;
 		counts += counts > 0 ? -1 : 1;
 	}
 	return any;
+}
+
+
+void
+Computer::StealCycles(int mct)
+{
+	// From outside Step(): the program loses this time.
+	_StealCycles(mct);
+	fBudget -= mct * kMCTSeconds;
 }
 
 

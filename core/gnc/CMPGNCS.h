@@ -30,6 +30,7 @@ struct CMPanel {
 	// CMC MODE switch.
 	enum Mode { MODE_FREE, MODE_HOLD, MODE_AUTO } mode = MODE_AUTO;
 	bool spsArmed = false;          // delta-V thrust switches A/B
+	bool spsBankA = true;           // ...with bank A (false: B only)
 	bool spsStart = false;          // THRUST ON button (SCS)
 	bool spsStop = false;           // delta-V thrust switches off
 	bool tvcEnable = true;          // gimbal motors on
@@ -72,6 +73,7 @@ public:
 
 	// Failures injected by the simulation.
 	bool spsFailed = false;         // won't ignite (or shuts down)
+	bool spsThrustShortA = false;   // Apollo 15: bank A fires the SPS when armed
 	bool gimbalFailedPitch = false; // actuator frozen
 	bool gimbalFailedYaw = false;
 	bool jetDriverFailed[16] = {};

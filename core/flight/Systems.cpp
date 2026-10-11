@@ -21,7 +21,7 @@ const double kFCH2PerKWh = 0.040;
 const double kFCWaterPerKWh = 0.36;
 // LiOH canisters, crew-hours of scrubbing.
 const double kCMCanister = 36.0;
-const double kLMCanister = 52.0;
+const double kLMCanister = 40.0;   // primary cartridge, crew-hours
 // Sublimator water for the LM's cooling, kg per kWh dissipated.
 const double kSublimatorPerKWh = 1.0;
 
@@ -38,15 +38,20 @@ Breathe(double hours, int crew, Cabin& cabin, LiOH& lioh, bool lm)
 {
 	double crewHours = crew * hours;
 	if (crew > 0) {
-		if (lioh.activeLife <= 0) {
-			int& spares = lm ? lioh.canistersLM : lioh.canistersCM;
-			if (spares > 0) {
-				spares--;
-				lioh.activeLife = lm ? kLMCanister : kCMCanister;
+		double& life = lm ? lioh.activeLifeLM : lioh.activeLife;
+		if (life <= 0) {
+			// The LM's cartridges are round, the CM's square: the CM's only
+			// fit the LM's system through the improvised adapter.
+			if (lm && lioh.canistersLM > 0) {
+				lioh.canistersLM--;
+				life = kLMCanister;
+			} else if ((!lm || lioh.squareInRound) && lioh.canistersCM > 0) {
+				lioh.canistersCM--;
+				life = kCMCanister;
 			}
 		}
-		if (lioh.activeLife > 0) {
-			lioh.activeLife -= crewHours;
+		if (life > 0) {
+			life -= crewHours;
 			// Scrubbing pulls CO2 back down toward ~1 mm Hg.
 			cabin.co2 += (1.0 - cabin.co2) * std::min(1.0, hours * 0.5);
 		} else {

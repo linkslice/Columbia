@@ -160,6 +160,7 @@ public:
 	// --- World ---------------------------------------------------------------
 	const sim::MoonScene& Moon() const { return *fMoonScene; }
 	const sim::world::Terrain& Terrain() const { return fTerrain; }
+	sim::world::Terrain& EditTerrain() { return fTerrain; }
 	Situation Situate(const sim::Vehicle& vehicle) const;
 	Phase CurrentPhase() const { return fPhase; }
 	void SetPhase(Phase phase);
@@ -192,6 +193,20 @@ public:
 	bool JettisonStage(const std::string& module, double separation);
 	bool TowerAttached() const { return fTowerAttached; }
 	bool OnPad() const { return fOnPad; }
+
+	// Hardware faults set by contingencies and read by the hardware model.
+	struct Faults {
+		int probeMisses = 0;          // docking: capture latches don't engage
+		bool mainChuteFouled = false; // one of three mains collapsed
+		bool stagingGyration = false; // LM: AGS mode switch left in AUTO
+		bool sceFailed = false;       // CSM: signal conditioning lost
+		bool smDamaged = false;       // CSM: service module structural damage
+	} faults;
+	// Crew actions for particular failures.
+	void SCEToAux();                  // signal conditioning to AUX power
+	void ResetFuelCells();            // reconnect the fuel cells to the buses
+	void PenInBreaker();              // push the broken ascent-arm breaker
+	void RRModeToLGC();               // rendezvous radar switch to LGC
 
 	// The parking orbit's plane: through the pad at liftoff and, for a
 	// lunar mission, the Moon at LOI (what the IU's launch azimuth

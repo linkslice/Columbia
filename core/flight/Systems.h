@@ -86,7 +86,8 @@ struct Cabin {
 struct LiOH {
 	int canistersCM = 0;       // spares stowed
 	int canistersLM = 0;
-	double activeLife = 0;     // crew-hours left in the installed canister
+	double activeLife = 0;     // crew-hours left in the CM's installed canister
+	double activeLifeLM = 0;   // ...and in the LM's
 	bool squareInRound = false;  // the Apollo 13 adapter in use
 };
 

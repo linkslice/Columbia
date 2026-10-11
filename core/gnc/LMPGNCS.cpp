@@ -41,22 +41,30 @@ const double kLRLowScaleFt = 2500;
 LMPGNCS::LMPGNCS(agc::Computer& computer, sim::Vehicle& vehicle)
 	:
 	fComputer(computer),
-	fVehicle(vehicle)
+	fVehicle(&vehicle)
 {
+}
+
+
+void
+LMPGNCS::Attach(sim::Vehicle& vehicle, const sim::Quat& frame)
+{
+	fVehicle = &vehicle;
+	fFrame = frame;
 }
 
 
 Thruster*
 LMPGNCS::_DPS()
 {
-	return fVehicle.GetThruster("DPS");
+	return fVehicle->GetThruster("DPS");
 }
 
 
 Thruster*
 LMPGNCS::_APS()
 {
-	return fVehicle.GetThruster("APS");
+	return fVehicle->GetThruster("APS");
 }
 
 
@@ -161,9 +169,9 @@ void
 LMPGNCS::Step(double dt, const RadarScene* scene)
 {
 	// IMU: gimbal lock monitoring, CDUs and accelerometers.
-	fGimbalWarning = imu.Update(fVehicle.attitude, dt);
+	fGimbalWarning = imu.Update(_Attitude(), dt);
 	uint16_t ch12 = fComputer.Channel(012);
-	Vec3 g = imu.Gimbals(fVehicle.attitude);
+	Vec3 g = imu.Gimbals(_Attitude());
 	if (ch12 & Bit(5)) {
 		fComputer.SetCell(agc::REG_CDUX, 0);
 		fComputer.SetCell(agc::REG_CDUY, 0);
@@ -174,7 +182,7 @@ LMPGNCS::Step(double dt, const RadarScene* scene)
 		fComputer.SetCell(agc::REG_CDUZ, AngleToCDU(g.z));
 	}
 	int counts[3];
-	imu.Sense(fVehicle.SensedDeltaV(), kPIPAPulseLM, counts);
+	imu.Sense(fVehicle->SensedDeltaV(), kPIPAPulseLM, counts);
 	fComputer.AddCounts(agc::REG_PIPAX, counts[0]);
 	fComputer.AddCounts(agc::REG_PIPAY, counts[1]);
 	fComputer.AddCounts(agc::REG_PIPAZ, counts[2]);
@@ -270,7 +278,7 @@ LMPGNCS::_Outputs(double dt, const RadarScene* scene)
 		const uint16_t cells[3] = {agc::REG_CDUXCMD, agc::REG_CDUYCMD,
 			agc::REG_CDUZCMD};
 		const int driveBits[3] = {15, 14, 13};
-		Vec3 gimbals = imu.Gimbals(fVehicle.attitude);
+		Vec3 gimbals = imu.Gimbals(_Attitude());
 		double* axes[3] = {&gimbals.x, &gimbals.y, &gimbals.z};
 		bool moved = false;
 		for (int i = 0; i < 3; i++) {
@@ -289,7 +297,7 @@ LMPGNCS::_Outputs(double dt, const RadarScene* scene)
 			moved = true;
 		}
 		if (moved)
-			imu.SetGimbals(fVehicle.attitude, gimbals);
+			imu.SetGimbals(_Attitude(), gimbals);
 	}
 
 	// --- IMU fine alignment: gyro torquing (channel 14 bits 6-10) -------------
@@ -336,7 +344,7 @@ LMPGNCS::_Thrusters()
 		uint16_t bits = ch == 5 ? fJets5 : fJets6;
 		for (int bit = 1; bit <= 8; bit++) {
 			const char* name = sim::craft::LMJetName(ch, bit);
-			Thruster* t = name ? fVehicle.GetThruster(name) : nullptr;
+			Thruster* t = name ? fVehicle->GetThruster(name) : nullptr;
 			if (t == nullptr)
 				continue;
 			int index = (ch - 5) * 8 + bit - 1;
@@ -385,7 +393,7 @@ LMPGNCS::_Radar(double dt, const RadarScene* scene)
 	// v_nb = antenna * v_ant for the frame-rotation convention used by
 	// the flight software's *SMNB*.
 	auto toInertial = [&](const Vec3& vAnt) {
-		return fVehicle.ToInertial(antenna * vAnt);
+		return _Attitude().Rotate(antenna * vAnt);
 	};
 
 	fLRRangeGood = false;
@@ -395,12 +403,12 @@ LMPGNCS::_Radar(double dt, const RadarScene* scene)
 	if (scene != nullptr && !lrFailed && fLRSlew <= 0) {
 		// Luminary's HBEAMANT is the outbound range-beam direction.
 		Vec3 beam = toInertial(kRangeBeamAntenna).Unit();
-		if (scene->SlantRange(fVehicle.position, beam,
+		if (scene->SlantRange(fVehicle->position, beam,
 				kLRMaxRangeFt * kFeet * 1.2, &range)) {
 			fLRRangeGood = range / kFeet < kLRMaxRangeFt;
 			fLRVelGood = range / kFeet < kLRVelocityAcquireFt;
 		}
-		relVel = fVehicle.velocity - scene->SurfaceVelocity(fVehicle.position);
+		relVel = fVehicle->velocity - scene->SurfaceVelocity(fVehicle->position);
 	}
 	fLRAltitude = fLRRangeGood ? range : 0;
 

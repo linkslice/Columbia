@@ -34,15 +34,23 @@ const double kGimbalRate = 10.0 * 3.14159265358979323846 / 180.0;  // rad/s
 CMPGNCS::CMPGNCS(agc::Computer& computer, sim::Vehicle& vehicle)
 	:
 	fComputer(computer),
-	fVehicle(vehicle)
+	fVehicle(&vehicle)
 {
+}
+
+
+void
+CMPGNCS::Attach(sim::Vehicle& vehicle, const sim::Quat& frame)
+{
+	fVehicle = &vehicle;
+	fFrame = frame;
 }
 
 
 Thruster*
 CMPGNCS::_SPS()
 {
-	return fVehicle.GetThruster("SPS");
+	return fVehicle->GetThruster("SPS");
 }
 
 
@@ -116,9 +124,9 @@ CMPGNCS::_Inputs()
 void
 CMPGNCS::Step(double dt)
 {
-	fGimbalWarning = imu.Update(fVehicle.attitude, dt);
+	fGimbalWarning = imu.Update(_Attitude(), dt);
 	uint16_t ch12 = fComputer.Channel(012);
-	Vec3 g = imu.Gimbals(fVehicle.attitude);
+	Vec3 g = imu.Gimbals(_Attitude());
 	if (ch12 & Bit(5)) {
 		fComputer.SetCell(agc::REG_CDUX, 0);
 		fComputer.SetCell(agc::REG_CDUY, 0);
@@ -129,7 +137,7 @@ CMPGNCS::Step(double dt)
 		fComputer.SetCell(agc::REG_CDUZ, AngleToCDU(g.z));
 	}
 	int counts[3];
-	imu.Sense(fVehicle.SensedDeltaV(), kPIPAPulseCM, counts);
+	imu.Sense(fVehicle->SensedDeltaV(), kPIPAPulseCM, counts);
 	fComputer.AddCounts(agc::REG_PIPAX, counts[0]);
 	fComputer.AddCounts(agc::REG_PIPAY, counts[1]);
 	fComputer.AddCounts(agc::REG_PIPAZ, counts[2]);
@@ -202,7 +210,7 @@ CMPGNCS::_Outputs(double dt)
 		const uint16_t cells[3] = {agc::REG_CDUXCMD, agc::REG_CDUYCMD,
 			agc::REG_CDUZCMD};
 		const int driveBits[3] = {15, 14, 13};
-		Vec3 gimbals = imu.Gimbals(fVehicle.attitude);
+		Vec3 gimbals = imu.Gimbals(_Attitude());
 		double* axes[3] = {&gimbals.x, &gimbals.y, &gimbals.z};
 		bool moved = false;
 		for (int i = 0; i < 3; i++) {
@@ -220,7 +228,7 @@ CMPGNCS::_Outputs(double dt)
 			moved = true;
 		}
 		if (moved)
-			imu.SetGimbals(fVehicle.attitude, gimbals);
+			imu.SetGimbals(_Attitude(), gimbals);
 	}
 
 	// --- Gyro torquing (channel 14 bits 6-10) ---------------------------------
@@ -260,10 +268,10 @@ CMPGNCS::_Thrusters()
 			int index = (ch - 5) * 8 + bit - 1;
 			bool on = cmcHasJets && (bits & Bit(bit)) && !jetDriverFailed[index];
 			if (const char* name = sim::craft::CSMJetName(ch, bit))
-				if (Thruster* t = fVehicle.GetThruster(name))
+				if (Thruster* t = fVehicle->GetThruster(name))
 					t->on = on && !panel.cmSmSeparated;
 			if (const char* name = sim::craft::CMJetName(ch, bit))
-				if (Thruster* t = fVehicle.GetThruster(name))
+				if (Thruster* t = fVehicle->GetThruster(name))
 					t->on = on && panel.cmSmSeparated;
 		}
 	}

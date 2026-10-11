@@ -96,6 +96,16 @@ public:
 	const Module* FindModule(const std::string& name) const;
 	// Removes a module, returning it (used for staging and undocking).
 	Module RemoveModule(const std::string& name);
+	// Docking: takes over all of `other`'s modules, placed so that other's
+	// frame sits at `offset` with `rotation` (other frame -> this frame).
+	// Inertial positions stay put; momentum is conserved.
+	void Merge(Vehicle& other, const Vec3& offset, const Mat3& rotation);
+	// Undocking/staging: splits off the named modules as a new vehicle
+	// whose frame is at `offset`, `rotation` (new frame -> this frame) in
+	// this vehicle's frame. `separation` is the relative velocity given
+	// to the new vehicle along its own +X (springs, pyros).
+	Vehicle Detach(const std::vector<std::string>& modules, const Vec3& offset,
+		const Mat3& rotation, const std::string& name, double separation = 0);
 	void UpdateMassProperties();
 
 	double Mass() const { return fMass; }

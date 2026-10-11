@@ -48,6 +48,12 @@ public:
 	IMU imu;
 	CMPanel panel;
 
+	// Re-homes the hardware on another physical vehicle (docking and
+	// undocking merge and split vehicles); `frame` rotates this
+	// spacecraft's body axes into that vehicle's frame.
+	void Attach(sim::Vehicle& vehicle, const sim::Quat& frame = sim::Quat());
+	sim::Vehicle& Vehicle() { return *fVehicle; }
+
 	// Advances the computer and the hardware by dt (keep dt <= 10 ms),
 	// after the vehicle's physics step for the same interval.
 	void Step(double dt);
@@ -77,7 +83,9 @@ private:
 	sim::Thruster* _SPS();
 
 	agc::Computer& fComputer;
-	sim::Vehicle& fVehicle;
+	sim::Vehicle* fVehicle;
+	sim::Quat fFrame;             // this spacecraft's body -> vehicle frame
+	sim::Quat _Attitude() const { return fVehicle->attitude * fFrame; }
 
 	bool fSPSOn = false;
 	double fTVCResidual[2] = {0, 0};

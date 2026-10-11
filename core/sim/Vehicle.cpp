@@ -136,6 +136,64 @@ Vehicle::RemoveModule(const std::string& n)
 
 
 void
+Vehicle::Merge(Vehicle& other, const Vec3& offset, const Mat3& rotation)
+{
+	double m1 = fMass, m2 = other.fMass;
+	Vec3 momentum = velocity * m1 + other.velocity * m2;
+	Vec3 oldCG = fCG;
+	for (Module m : other.fModules) {
+		m.offset = offset + rotation * m.offset;
+		m.rotation = rotation * m.rotation;
+		fModules.push_back(m);
+	}
+	other.fModules.clear();
+	other.UpdateMassProperties();
+	UpdateMassProperties();
+	position += ToInertial(fCG - oldCG);
+	velocity = momentum / std::max(1.0, m1 + m2);
+	contacts.clear();
+}
+
+
+Vehicle
+Vehicle::Detach(const std::vector<std::string>& names, const Vec3& offset,
+	const Mat3& rotation, const std::string& name, double separation)
+{
+	Vehicle out(name);
+	Mat3 inv = rotation.Transposed();
+	for (const std::string& n : names) {
+		for (size_t i = 0; i < fModules.size(); i++) {
+			if (fModules[i].name != n)
+				continue;
+			Module m = fModules[i];
+			m.offset = inv * (m.offset - offset);
+			m.rotation = inv * m.rotation;
+			out.fModules.push_back(m);
+		}
+	}
+	out.UpdateMassProperties();
+	// The new vehicle's CG in this frame, then remove the modules.
+	Vec3 cgHere = offset + rotation * out.fCG;
+	out.position = PointPosition(cgHere);
+	out.velocity = velocity + ToInertial(rates.Cross(cgHere - fCG));
+	out.attitude = (attitude * Quat::FromMatrix(rotation)).Normalized();
+	out.rates = inv * rates;
+	out.jd = jd;
+	out.ambientPressure = ambientPressure;
+	for (const std::string& n : names)
+		RemoveModule(n);
+	if (separation != 0) {
+		// Share the push in proportion to the masses.
+		double m1 = fMass, m2 = out.fMass;
+		Vec3 dir = out.ToInertial(Vec3(1, 0, 0));
+		out.velocity += dir * (separation * m1 / (m1 + m2));
+		velocity -= dir * (separation * m2 / (m1 + m2));
+	}
+	return out;
+}
+
+
+void
 Vehicle::UpdateMassProperties()
 {
 	double total = 0;

@@ -1433,6 +1433,10 @@ FlightSim::Run(double simSeconds)
 			_Step(kStep);
 			remaining -= kStep;
 		}
+		if (stopWhen && stopWhen()) {
+			remaining = 0;     // the rest of this run is dropped
+			break;
+		}
 	}
 	fCarry = remaining;
 }

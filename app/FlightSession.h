@@ -11,6 +11,7 @@
 
 #include "flight/AutoCrew.h"
 #include "flight/Contingency.h"
+#include "flight/Drill.h"
 #include "flight/FlightSim.h"
 #include "flight/MissionDirector.h"
 #include "flight/MissionSpec.h"
@@ -33,6 +34,7 @@ struct FlightOptions {
 	bool realTimeOnly = false;     // no time warp
 	uint32_t seed = 0;             // contingency draw (0: random)
 	std::string ropes;             // directory with the flight software
+	flight::DrillId drill = flight::DrillId::None;   // a training drill
 };
 
 class FlightSession {
@@ -63,6 +65,12 @@ public:
 	void SetAutopilot(bool on);
 	bool Autopilot() const { return fAutopilot; }
 
+	// A drill being set up: the crew flies, flat out, to the drill's
+	// moment, then hands over (and the warp drops to real time).
+	bool DrillPending() const { return fDrillPending; }
+	bool DrillFailed() const { return fDrillFailed; }
+	const flight::DrillSpec* Drill() const { return fDrill; }
+
 	// Log lines since the last call (for the air-to-ground view).
 	void TakeLog(std::deque<flight::LogEntry>* out);
 	// The flight is over (splashdown or lost); the outcome line.
@@ -73,6 +81,7 @@ public:
 
 private:
 	void _Run();
+	bool _CheckDrill();
 
 	FlightOptions fOptions;
 	std::unique_ptr<flight::FlightSim> fSim;
@@ -87,6 +96,10 @@ private:
 	std::atomic<bool> fOver{false};
 	std::atomic<double> fWarp{1.0};
 	bool fAutopilot = false;
+	const flight::DrillSpec* fDrill = nullptr;
+	std::atomic<bool> fDrillPending{false};
+	std::atomic<bool> fDrillFailed{false};
+	double fDrillStartGET = 0;
 	std::mutex fLogLock;
 	std::deque<flight::LogEntry> fLog;
 	bool fRecordingClosed = false;

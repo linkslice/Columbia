@@ -23,7 +23,7 @@ for f in app/*.cpp ui/*.cpp screensaver/*.cpp; do
 		-I"$H/config" -I"$H" -I"$H/os" -I"$H/os/app" -I"$H/os/interface" \
 		-I"$H/os/kernel" -I"$H/os/storage" -I"$H/os/support" -I"$H/os/locale" \
 		-I"$H/os/translation" -I"$H/os/add-ons/graphics" -I"$H/os/drivers" \
-		-I"$H/os/add-ons/screen_saver" -I"$H/os/game" -I"$H/os/opengl" \
+		-I"$H/os/add-ons/screen_saver" -I"$H/os/device" -I"$H/os/game" -I"$H/os/opengl" \
 		-Icore -Iapp -Iui \
 		-isystem /usr/include/c++/$GV -isystem /usr/include/x86_64-linux-gnu/c++/$GV \
 		-isystem "$H/posix" -isystem "$H/glibc" \

@@ -44,6 +44,8 @@ public:
 		double clock);
 
 	Scene SceneAt(double get) const;
+	// A recording still being made: catch up with what's been added.
+	void Refresh();
 
 private:
 	struct Frame;      // per-draw context
@@ -78,6 +80,7 @@ private:
 	struct Marker { double get; std::string label; };
 	std::vector<Marker> fMarkers;
 	double fLiftoffGET = 0;
+	size_t fPrecomputed = 0;      // samples seen by _Precompute
 	sim::Vec3 fPadFixed;          // launch pad, Earth-fixed unit vector
 	// Captions on screen: event index -> replay clock when it appeared.
 	std::map<size_t, double> fCaptionShown;

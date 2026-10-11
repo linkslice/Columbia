@@ -108,6 +108,7 @@ public:
 		{ return fDebris; }
 	bool HasLM() const { return fHasLM; }
 	bool LMDocked() const { return fLMDocked; }
+	bool LMInSLA() const { return fLMInSLA; }
 	bool LMLanded() const { return fLMLanded; }
 	bool BoosterAttached() const { return fBoosterAttached; }
 	bool SMAttached() const { return fSMAttached; }
@@ -197,6 +198,9 @@ public:
 	std::vector<std::function<void(FlightSim&, double)>> stepHooks;
 	// Hooks run once per simulated second (systems, checks).
 	std::vector<std::function<void(FlightSim&, double)>> secondHooks;
+	// Checked after every step: true stops the current Run() there (the
+	// rest of the time asked for is dropped).
+	std::function<bool()> stopWhen;
 
 	// Saturn launch vehicle guidance (set by the boost module).
 	std::function<void(FlightSim&, double)> boosterGuidance;

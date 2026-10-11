@@ -27,6 +27,14 @@ FlightSession::Start(const FlightOptions& options, std::string* error)
 {
 	Stop();
 	fOptions = options;
+	fDrill = fOptions.drill != DrillId::None ? FindDrill(fOptions.drill) : nullptr;
+	if (fDrill && !DrillAvailable(*fDrill, fOptions.mission)) {
+		if (error)
+			*error = fOptions.mission.name + " has no " + fDrill->name + " to practise";
+		return false;
+	}
+	if (fDrill)
+		fOptions.start = fDrill->from;
 	fSim.reset(new FlightSim(fOptions.mission, fOptions.ropes));
 	if (!fSim->Start(fOptions.start, error)) {
 		fSim.reset();
@@ -51,8 +59,19 @@ FlightSession::Start(const FlightOptions& options, std::string* error)
 	});
 	fDirector.reset(new MissionDirector(*fSim, *fCrew));
 	fDirector->Install();
-	SetAutopilot(fOptions.autopilot);
-	fWarp = 1;
+	fDrillPending = fDrill != nullptr;
+	fDrillFailed = false;
+	fDrillStartGET = fSim->GET();
+	if (fDrill) {
+		fSim->Log(LogEntry::Event, std::string("Drill: ") + fDrill->name
+			+ ". Setting it up...");
+		SetAutopilot(true);
+		fWarp = 100000;
+		fSim->stopWhen = [this]() { return fDrillPending && _CheckDrill(); };
+	} else {
+		SetAutopilot(fOptions.autopilot);
+		fWarp = 1;
+	}
 	fOver = false;
 	fRecordingClosed = false;
 	fRunning = true;
@@ -73,6 +92,8 @@ FlightSession::Stop()
 void
 FlightSession::SetWarp(double warp)
 {
+	if (fDrillPending)
+		return;     // flat out until the drill is ready
 	if (fOptions.realTimeOnly)
 		warp = std::min(warp, 1.0);
 	fWarp = std::max(0.1, std::min(warp, 100000.0));
@@ -83,6 +104,8 @@ void
 FlightSession::SetAutopilot(bool on)
 {
 	std::lock_guard<std::recursive_mutex> g(fLock);
+	if (fDrillPending && !on)
+		return;     // the crew sets the drill up
 	fAutopilot = on;
 	if (!fDirector)
 		return;
@@ -177,6 +200,33 @@ FlightSession::_Run()
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(8));
 	}
+}
+
+
+bool
+FlightSession::_CheckDrill()
+{
+	if (DrillReady(*fDrill, *fSim, *fCrew, *fDirector)) {
+		fDrillPending = false;
+		fWarp = 1;
+		fSim->SetWarp(1);
+		SetAutopilot(fOptions.autopilot);
+		fSim->Log(LogEntry::Event, std::string("Drill: ") + fDrill->name
+			+ (fOptions.autopilot ? ". Watch the crew." : ". You have the controls."));
+		fSim->Log(LogEntry::Info, fDrill->brief);
+		return true;
+	}
+	if (fSim->Lost() || fSim->CurrentPhase() == Phase::Recovery
+			|| fSim->GET() > fDrillStartGET + fDrill->maxHours * 3600) {
+		fDrillPending = false;
+		fDrillFailed = true;
+		fWarp = 1;
+		fPaused = true;
+		fSim->Log(LogEntry::Warning, std::string("Drill: ") + fDrill->name
+			+ " could not be set up on this flight.");
+		return true;
+	}
+	return false;
 }
 
 }  // namespace columbia

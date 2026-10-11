@@ -56,14 +56,14 @@ def pad_names(path):
             continue
         size = 1
         if op == 'ERASE':
-            mm = re.match(r'\s*\+\s*(\d+)D?', operand)
-            if mm:
-                size = int(mm.group(1)) + 1
+            mm = re.match(r'\s*\+\s*(\d+)(D?)', operand)
+            if mm:   # yaYUL: decimal with a D suffix, octal without
+                size = int(mm.group(1), 10 if mm.group(2) else 8) + 1
         else:
             mm = re.search(r'[IB]?\((\d+)\)', comment)
             if mm:
                 size = int(mm.group(1))
-        if size > 40:      # whole regions (W matrix and the like)
+        if size > 100:     # whole regions (the W matrix)
             continue
         names.append((name, size))
     return names

@@ -49,6 +49,7 @@ struct LMPadLoad {
 struct CMCPadLoad {
 	double agcTime = 0;          // GET now (s)
 	double tephem = 0;           // s from July 1.0 UT of the year to GET 0
+	double azo = 0;              // Earth rotation angle at July 1.0 (rev)
 	sim::Mat3 refsmmat;          // rows: stable-member axes
 	bool refsmmatGood = true;
 	StateVector csm, lm;

@@ -76,6 +76,31 @@ test: $(TESTDIR)/mission_test $(TESTDIR)/controller_test $(TESTDIR)/agc_boot $(T
 		echo " tools/verify_rope.sh builds it from Virtual AGC)"; \
 	fi
 
+# --- Flight tests: the real flight software flies real mission phases -------
+# (each takes a minute or more; they need the rope/ directory)
+
+GNC_SRCS := core/agc/AGC.cpp core/agc/DSKY.cpp $(wildcard core/gnc/*.cpp) \
+	core/sim/World.cpp core/sim/Vehicle.cpp core/sim/Spacecraft.cpp \
+	core/sim/Aero.cpp core/sim/MoonScene.cpp
+
+$(TESTDIR)/lm_landing: tests/lm_landing_test.cpp $(GNC_SRCS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(TESTDIR)/csm_burn: tests/csm_burn_test.cpp $(GNC_SRCS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(TESTDIR)/cm_entry: tests/cm_entry_test.cpp $(GNC_SRCS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+.PHONY: flighttest
+flighttest: $(TESTDIR)/lm_landing $(TESTDIR)/csm_burn $(TESTDIR)/cm_entry
+	$(TESTDIR)/lm_landing rope Luminary099 | tail -3
+	$(TESTDIR)/csm_burn rope Comanche055 | tail -2
+	$(TESTDIR)/cm_entry rope Comanche055 | tail -2
+
 # Renders the real DSKY and trajectory views to PNGs through a small Cairo
 # stand-in for the Interface Kit (needs cairo; useful off-Haiku).
 preview: tests/preview/preview.cpp tests/preview/HaikuShim.cpp app/DSKYView.cpp app/TrajectoryView.cpp $(CORE_SRCS)

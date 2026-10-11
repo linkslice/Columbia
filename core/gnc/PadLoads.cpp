@@ -234,6 +234,16 @@ LoadCMCMission(PadLoader& p, const CMCPadLoad& m)
 	p.Octal("TEPHEM", uint16_t((cs >> 28) & 037777), 0);
 	p.Octal("TEPHEM", uint16_t((cs >> 14) & 037777), 1);
 	p.Octal("TEPHEM", uint16_t(cs & 037777), 2);
+	p.Double("AZO", m.azo, 0);
+	// Earth's spin axis in the reference frame (UNITW, whose X and Y words
+	// are -AYO and AXO): the frame's own pole, since the simulation's
+	// reference frame is of date.
+	p.Octal("UNITW", 0, 0);
+	p.Octal("UNITW", 0, 1);
+	p.Octal("UNITW", 0, 2);
+	p.Octal("UNITW", 0, 3);
+	p.Octal("UNITW", 037777, 4);
+	p.Octal("UNITW", 037777, 5);
 
 	p.Vector("REFSMMAT", m.refsmmat.Row(0), -1);
 	Vec3 r1 = m.refsmmat.Row(1), r2 = m.refsmmat.Row(2);

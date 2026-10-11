@@ -140,6 +140,9 @@ public:
 	bool JettisonTower();
 	void DeployDrogues();
 	void DeployMains();
+	bool DroguesOut() const { return fDrogues; }
+	bool MainsOut() const { return fMains; }
+	bool Splashed() const { return fSplashed; }
 	// Docking geometry for the approach display: probe-to-drogue distance,
 	// closing speed, and misalignment.
 	bool DockingGeometry(double* range, double* rate, double* angle) const;
@@ -182,6 +185,8 @@ public:
 	void Log(LogEntry::Kind kind, const std::string& text);
 	const std::deque<LogEntry>& Entries() const { return fLog; }
 	std::function<void(const LogEntry&)> onLog;
+	// More listeners (the flight recorder, the app's log view).
+	std::vector<std::function<void(const LogEntry&)>> logHooks;
 
 	// Outcome.
 	bool Lost() const { return fPhase == Phase::Lost; }

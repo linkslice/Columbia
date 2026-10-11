@@ -15,6 +15,7 @@
 #include "../sim/Math.h"
 
 #include <deque>
+#include <map>
 #include <functional>
 #include <memory>
 #include <string>
@@ -101,6 +102,11 @@ public:
 
 	DSKYDriver cmc, lgc;
 	bool verbose = false;
+	// Work the failures the crew notices (Apollo 12's SCE to AUX, the pen
+	// in Apollo 11's breaker, ...). Off: the player's crew does nothing.
+	bool troubleshoot = true;
+	// Crew calls also go in the flight's log (as LogEntry::Crew).
+	bool logToFlight = true;
 
 	// --- Procedures --------------------------------------------------------
 	// SPS (or docked-stack) burn: V48/V46, P30 with the PAD's TIG and LVLH
@@ -151,8 +157,10 @@ public:
 
 private:
 	void _Step(double dt);
+	void _Troubleshoot();
 
 	FlightSim& f;
+	std::map<std::string, double> fNoticed;   // failure -> GET first seen
 	std::deque<std::unique_ptr<Procedure>> fQueue;
 	bool fInstalled = false;
 };

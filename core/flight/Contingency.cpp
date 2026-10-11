@@ -915,6 +915,8 @@ ContingencyManager::ContingencyManager(FlightSim& sim, Difficulty difficulty,
 	fDifficulty(difficulty),
 	fRandom(seed ? seed : std::random_device()())
 {
+	for (double& h : fHappened)
+		h = -1e30;
 }
 
 
@@ -976,6 +978,7 @@ ContingencyManager::Plan()
 		Scheduled s;
 		s.spec = &c;
 		s.get = t;
+		s.offset = t - t0;
 		fSchedule.push_back(s);
 	};
 	// What happened on this flight.
@@ -1048,13 +1051,61 @@ ContingencyManager::Trigger(const std::string& id)
 }
 
 
+double
+ContingencyManager::_Happened(Event e)
+{
+	double& when = fHappened[int(e)];
+	if (when > -1e29)
+		return when;
+	Phase ph = f.CurrentPhase();
+	bool now = false;
+	switch (e) {
+		case Event::Liftoff: now = ph != Phase::Prelaunch; break;
+		case Event::Insertion:
+			now = ph != Phase::Prelaunch && ph != Phase::Boost;
+			break;
+		case Event::TLI:
+			now = ph == Phase::TranslunarInjection || ph == Phase::TranslunarCoast
+				|| ph == Phase::LunarOrbit;
+			break;
+		case Event::LOI: now = ph == Phase::LunarOrbit; break;
+		case Event::Undock:
+			now = f.LMVehicle() && !f.LMDocked()
+				&& (ph == Phase::LunarOrbit || ph == Phase::PoweredDescent
+					|| ph == Phase::EarthParkingOrbit);
+			break;
+		case Event::PDI: now = ph == Phase::PoweredDescent; break;
+		case Event::Landing: now = ph == Phase::LunarSurface; break;
+		case Event::Liftoff2:
+			now = ph == Phase::LunarAscent || ph == Phase::Rendezvous;
+			break;
+		case Event::TEI: now = ph == Phase::TransearthCoast; break;
+		case Event::Entry: now = ph == Phase::Entry; break;
+	}
+	if (now) {
+		// Already past when the flight began (a later start point): as
+		// planned.
+		when = fStarted ? f.GET() : std::min(f.GET(), _EventGET(e));
+	}
+	return now ? when : -1;
+}
+
+
 void
 ContingencyManager::Tick()
 {
 	double get = f.GET();
+	if (!fStarted) {
+		for (int e = 0; e <= int(Event::Entry); e++)
+			_Happened(Event(e));
+		fStarted = true;
+	}
 	for (Scheduled& s : fSchedule) {
 		if (!s.fired) {
-			if (get < s.get)
+			// Timed from the event as it happened (the flight plan only
+			// guesses: a landing comes when the descent does).
+			double at = _Happened(s.spec->event);
+			if (at < 0 || get < at + s.offset)
 				continue;
 			if (s.spec->applicable && !s.spec->applicable(f)) {
 				// Missed its moment (e.g. that stage is already gone).

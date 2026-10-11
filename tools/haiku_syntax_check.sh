@@ -17,17 +17,18 @@ extern "C" { int at_quick_exit(void (*)(void));
 #endif
 EOS
 status=0
-for f in app/*.cpp; do
+for f in app/*.cpp ui/*.cpp screensaver/*.cpp; do
 	out=$(g++ -fsyntax-only -std=c++17 -Wall -Wextra -Wno-multichar \
 		-Wno-deprecated-copy -D__HAIKU__ -D'__GLIBC_PREREQ(a,b)=0' -nostdinc \
 		-I"$H/config" -I"$H" -I"$H/os" -I"$H/os/app" -I"$H/os/interface" \
 		-I"$H/os/kernel" -I"$H/os/storage" -I"$H/os/support" -I"$H/os/locale" \
 		-I"$H/os/translation" -I"$H/os/add-ons/graphics" -I"$H/os/drivers" \
-		-Icore -Iapp \
+		-I"$H/os/add-ons/screen_saver" -I"$H/os/game" -I"$H/os/opengl" \
+		-Icore -Iapp -Iui \
 		-isystem /usr/include/c++/$GV -isystem /usr/include/x86_64-linux-gnu/c++/$GV \
 		-isystem "$H/posix" -isystem "$H/glibc" \
 		-isystem /usr/lib/gcc/x86_64-linux-gnu/$GV/include \
-		-include "$shim/shim.h" "$f" 2>&1 | grep -E '^app/' || true)
+		-include "$shim/shim.h" "$f" 2>&1 | grep -E '^(app|ui|screensaver)/' || true)
 	if [ -n "$out" ]; then
 		echo "$out"; status=1
 	else

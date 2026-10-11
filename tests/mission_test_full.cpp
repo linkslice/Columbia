@@ -39,17 +39,13 @@ main(int argc, char** argv)
 	};
 	f.onLog = [&](const LogEntry& e) {
 		if (e.kind != LogEntry::Info || e.text.rfind("Flight plan", 0) == 0)
-			std::printf("%s [%4lds] %s\n", stamp(e.get).c_str(),
-				long(std::time(nullptr) - wall0), e.text.c_str());
+			std::printf("%s [%4lds] %s%s\n", stamp(e.get).c_str(),
+				long(std::time(nullptr) - wall0),
+				e.kind == LogEntry::Crew ? "  crew: " : "", e.text.c_str());
 		std::fflush(stdout);
 	};
 	AutoCrew crew(f);
 	crew.Install();
-	crew.onReport = [&](const std::string& s) {
-		std::printf("%s [%4lds]   crew: %s\n", stamp(f.GET()).c_str(),
-			long(std::time(nullptr) - wall0), s.c_str());
-		std::fflush(stdout);
-	};
 	crew.verbose = std::getenv("CREWDIAG") != nullptr;
 	if (std::getenv("DIAGFROM")) {
 		double from = std::atof(std::getenv("DIAGFROM"));

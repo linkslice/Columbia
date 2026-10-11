@@ -95,7 +95,7 @@ LMPGNCS::_Inputs()
 	};
 
 	// Channel 30.
-	set(030, 1, panel.abort);
+	set(030, 1, panel.abort && !abortIgnored);
 	set(030, 3, panel.engineArm != LMPanel::ARM_OFF);
 	set(030, 4, panel.abortStage);
 	set(030, 5, panel.autoThrottle);

@@ -66,20 +66,25 @@ struct font_height { float ascent, descent, leading; };
 
 class BFont {
 public:
-	BFont(bool bold = false) : fSize(12), fBold(bold) {}
-	BFont(const BFont* other) : fSize(other->fSize), fBold(other->fBold) {}
+	BFont(bool bold = false, bool fixed = false)
+		: fSize(12), fBold(bold), fFixed(fixed) {}
+	BFont(const BFont* other)
+		: fSize(other->fSize), fBold(other->fBold), fFixed(other->fFixed) {}
 	void SetSize(float size) { fSize = size; }
 	float Size() const { return fSize; }
 	bool Bold() const { return fBold; }
+	bool Fixed() const { return fFixed; }
 	void GetHeight(font_height* h) const
 	{ h->ascent = fSize * 0.76f; h->descent = fSize * 0.24f;
 		h->leading = fSize * 0.1f; }
 private:
 	float fSize;
 	bool fBold;
+	bool fFixed;
 };
 extern const BFont* be_plain_font;
 extern const BFont* be_bold_font;
+extern const BFont* be_fixed_font;
 
 enum color_which {
 	B_PANEL_BACKGROUND_COLOR, B_PANEL_TEXT_COLOR, B_LIST_BACKGROUND_COLOR,
@@ -102,6 +107,18 @@ const uint32 B_MOUSE_WHEEL_CHANGED = 'Bmsw';
 const char B_BACKSPACE = 0x08, B_ENTER = 0x0a;
 
 bigtime_t system_time();
+
+class BRegion {
+public:
+	BRegion() = default;
+	explicit BRegion(BRect r) : fRect(r), fSet(true) {}
+	void Set(BRect r) { fRect = r; fSet = true; }
+	BRect Frame() const { return fRect; }
+	bool IsSet() const { return fSet; }
+private:
+	BRect fRect;
+	bool fSet = false;
+};
 
 class BMessage {
 public:
@@ -168,6 +185,12 @@ public:
 	void AddLine(BPoint a, BPoint b, rgb_color color);
 	void EndLineArray() {}
 	void DrawBitmap(const class BBitmap* bitmap, BRect, BRect);
+	void DrawBitmap(const class BBitmap* bitmap, BPoint);
+	void ConstrainClippingRegion(BRegion* region);
+	void PushState();
+	void PopState();
+	void SetOrigin(BPoint p);
+	void SetScale(float scale);
 
 	// Shim only: the Cairo context this view draws into.
 	void SetContext(cairo_t* cr) { fCairo = cr; }

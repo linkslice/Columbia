@@ -342,11 +342,121 @@ AutoCrew::Install()
 	f.stepHooks.push_back([this](FlightSim&, double dt) { _Step(dt); });
 	// Between lockstep steps (coasting), keep the wake time current.
 	f.secondHooks.push_back([this](FlightSim& sim, double) {
+		if (troubleshoot)
+			_Troubleshoot();
 		if (fQueue.empty())
 			sim.lockstepFrom = 1e30;
 		else if (fQueue.front()->started)
 			sim.lockstepFrom = sim.GET();
 	});
+}
+
+
+// The crew's answers to the failures they notice, the way the real crews
+// (and Houston) worked them out, after a little time to diagnose.
+void
+AutoCrew::_Troubleshoot()
+{
+	double get = f.GET();
+	auto noticed = [&](const std::string& what, double delay) {
+		auto it = fNoticed.find(what);
+		if (it == fNoticed.end()) {
+			fNoticed[what] = get;
+			return false;
+		}
+		return get - it->second >= delay;
+	};
+	auto forget = [&](const std::string& what) { fNoticed.erase(what); };
+
+	// Apollo 12: the fuel cells drop off the buses and the SCE is lost
+	// ("SCE to AUX"), then the fuel cells reset.
+	if (f.faults.sceFailed) {
+		if (noticed("sce", 25)) {
+			f.SCEToAux();
+			Report("SCE to AUX");
+			forget("sce");
+		}
+	}
+	if (f.csmSystems.FuelCellsOnline() < 3 && f.CurrentPhase() == Phase::Boost
+			&& !f.faults.sceFailed) {
+		if (noticed("fuelcells", 15)) {
+			f.ResetFuelCells();
+			Report("Fuel cells reset to the main buses");
+			forget("fuelcells");
+		}
+	}
+	// Apollo 11: the broken engine-arm breaker, found on the floor.
+	if (gnc::LMPGNCS* pg = f.LMPGNCS()) {
+		if (pg->ascentArmBreakerOpen && f.LMLanded()) {
+			if (noticed("breaker", 600)) {
+				f.PenInBreaker();     // (logs it)
+				forget("breaker");
+			}
+		}
+		// Apollo 11: rendezvous radar left in SLEW after the landing.
+		if (pg->rrCDUHunting && f.LMLanded()) {
+			if (noticed("rr", 60)) {
+				f.RRModeToLGC();
+				Report("Rendezvous radar mode switch to LGC");
+				forget("rr");
+			}
+		}
+		// Apollo 14: the landing radar breaker cycled.
+		if (pg->lrFailed && f.CurrentPhase() == Phase::PoweredDescent
+				&& f.Mission().number == 14) {
+			if (noticed("lr", 45)) {
+				pg->lrFailed = false;
+				Report("Landing radar breaker cycled. Radar data good.");
+				forget("lr");
+			}
+		}
+		// Apollo 14: the solder ball in the ABORT switch. The uplinked
+		// procedure keyed at ignition leaves the LGC ignoring the discrete.
+		if (pg->panel.abort && !pg->abortIgnored && f.LMVehicle()
+				&& !f.LMLanded()) {
+			pg->abortIgnored = true;
+			Report("ABORT light with the switch out. Keying the uplinked"
+				" procedure: the LGC will ignore the switch");
+		}
+		// Apollo 10: the AGS mode switch, and the rates nulled by hand.
+		if (f.faults.stagingGyration) {
+			if (noticed("gyration", 6)) {
+				f.faults.stagingGyration = false;
+				pg->panel.mode = gnc::LMPanel::MODE_ATT_HOLD;
+				Report("Manual control. Rates nulled, ATTITUDE HOLD.");
+				forget("gyration");
+			}
+		}
+	}
+	// A stuck RCS jet: find the quad and close its isolation valves.
+	for (Module& m : f.CSMVehicle().Modules())
+		for (Thruster& t : m.thrusters)
+			if (t.failedOn && !t.failedOff) {
+				if (noticed("jet" + t.name, 40)) {
+					t.failedOff = true;
+					t.on = false;
+					t.level = 0;
+					Report("Quad isolation valves closed on jet " + t.name);
+					forget("jet" + t.name);
+				}
+			}
+	// Apollo 15: the SPS thrust switch short on bank A. Bank B only.
+	if (f.SMAttached() && f.CMPGNCS().spsThrustShortA
+			&& f.CMPGNCS().panel.spsBankA) {
+		if (noticed("spsA", 20)) {
+			f.CMPGNCS().panel.spsBankA = false;
+			Report("SPS bank A off; burns on bank B");
+			forget("spsA");
+		}
+	}
+	// A slow cabin leak: suits on, then find it.
+	if (f.cmCabin.leakRate > 0) {
+		if (noticed("leak", 1800)) {
+			f.cmCabin.leakRate = 0;
+			Report("Found the leak: a dump valve not fully seated");
+			forget("leak");
+		}
+	}
 }
 
 
@@ -371,6 +481,9 @@ AutoCrew::Abandon()
 void
 AutoCrew::Report(const std::string& text)
 {
+	// On the air-to-ground loop (the log, the replays).
+	if (logToFlight)
+		f.Log(LogEntry::Crew, text);
 	if (onReport)
 		onReport(text);
 	if (verbose)
@@ -1024,6 +1137,7 @@ private:
 	// P64: the commander looks through the LPD and redesignates away from
 	// craters and slopes.
 	bool fLooked = false, fSpotChosen = false;
+	double fLandedAt = -1;
 	double fSpotLat = 0, fSpotLon = 0;
 	double fClickTimer = 0;
 	int fClickAxis = -1, fClickDir = 0;

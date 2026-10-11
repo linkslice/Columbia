@@ -24,12 +24,11 @@ namespace {
 void
 Echo(FlightSim& f, AutoCrew& crew)
 {
+	(void)crew;
 	f.onLog = [](const LogEntry& e) {
 		if (e.kind != LogEntry::Info)
-			std::printf("    [%9.1f] %s\n", e.get, e.text.c_str());
-	};
-	crew.onReport = [&f](const std::string& s) {
-		std::printf("    [%9.1f] crew: %s\n", f.GET(), s.c_str());
+			std::printf("    [%9.1f] %s%s\n", e.get,
+				e.kind == LogEntry::Crew ? "crew: " : "", e.text.c_str());
 	};
 }
 

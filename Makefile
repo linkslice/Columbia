@@ -7,7 +7,7 @@
 NAME     := Columbia
 CXX      ?= g++
 CXXFLAGS ?= -O2
-CXXFLAGS += -std=c++17 -Wall -Wextra -Icore -Iapp
+CXXFLAGS += -std=c++17 -Wall -Wextra -Icore -Iapp -Iui -pthread
 
 CORE_SRCS := \
 	core/Mission.cpp \
@@ -29,7 +29,7 @@ CORE_OBJS := $(CORE_SRCS:%.cpp=$(OBJDIR)/%.o)
 APP_OBJS  := $(APP_SRCS:%.cpp=$(OBJDIR)/%.o)
 LIBS      := -lbe -ltracker
 
-.PHONY: all test preview clean
+.PHONY: all test preview clean saver install-saver
 
 all: $(NAME)
 
@@ -43,7 +43,9 @@ $(NAME): $(CORE_OBJS) $(APP_OBJS) Columbia.rdef
 
 $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(shell find $(OBJDIR) -name '*.d' 2>/dev/null)
 
 # --- Headless tests (no Haiku needed) ---------------------------------------
 
@@ -120,27 +122,71 @@ clean:
 	rm -rf $(OBJDIR) $(NAME)
 
 FLIGHT_SRCS := $(GNC_SRCS) $(wildcard core/flight/*.cpp)
+FLIGHT_OBJS := $(FLIGHT_SRCS:%.cpp=$(OBJDIR)/%.o)
 
-$(TESTDIR)/flight_test: tests/flight_test.cpp $(FLIGHT_SRCS)
+FLIGHT_TESTS := flight_test rtcc_test launch_test contingency_test \
+	autocrew_test mission_test_full recording_test
+
+$(FLIGHT_TESTS:%=$(TESTDIR)/%): $(TESTDIR)/%: $(OBJDIR)/tests/%.o $(FLIGHT_OBJS)
 	@mkdir -p $(TESTDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-$(TESTDIR)/rtcc_test: tests/rtcc_test.cpp $(FLIGHT_SRCS)
+$(OBJDIR)/tests/%.o: tests/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
+
+$(TESTDIR)/session_test: $(OBJDIR)/tests/session_test.o $(OBJDIR)/app/FlightSession.o $(FLIGHT_OBJS)
 	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -pthread -o $@ $^
+
+# --- Flight recordings (for the screensaver and replays) ---------------------
+
+$(OBJDIR)/record_mission: $(OBJDIR)/tools/record_mission.o $(FLIGHT_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-$(TESTDIR)/launch_test: tests/launch_test.cpp $(FLIGHT_SRCS)
-	@mkdir -p $(TESTDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+RECORDINGS := recordings
+MISSIONS_TO_RECORD ?= 11
 
-$(TESTDIR)/contingency_test: tests/contingency_test.cpp $(FLIGHT_SRCS)
-	@mkdir -p $(TESTDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+.PHONY: recordings
+recordings: $(OBJDIR)/record_mission
+	@mkdir -p $(RECORDINGS)
+	@for n in $(MISSIONS_TO_RECORD); do \
+		$(OBJDIR)/record_mission rope $$n $(RECORDINGS)/apollo$$n.colrec --quiet \
+			--difficulty $${DIFFICULTY:-asflown}; \
+	done
 
-$(TESTDIR)/autocrew_test: tests/autocrew_test.cpp $(FLIGHT_SRCS)
-	@mkdir -p $(TESTDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+# Renders replay frames (the screensaver's drawing) to PNGs off-Haiku.
+REPLAY_SRCS := ui/ReplayRenderer.cpp ui/ReplayPacer.cpp ui/DSKYPainter.cpp \
+	ui/Coastline.cpp core/flight/Recording.cpp core/sim/World.cpp
 
-$(TESTDIR)/mission_test_full: tests/mission_test_full.cpp $(FLIGHT_SRCS)
-	@mkdir -p $(TESTDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(OBJDIR)/preview/replay: tests/preview/replay_preview.cpp tests/preview/HaikuShim.cpp $(REPLAY_SRCS)
+	@mkdir -p $(OBJDIR)/preview
+	$(CXX) $(CXXFLAGS) -Wno-deprecated-copy -Wno-multichar -Itests/preview/shim -Iui -Icore \
+		$$(pkg-config --cflags cairo) -o $@ $^ $$(pkg-config --libs cairo)
+
+# --- The screensaver (Haiku) --------------------------------------------------
+# A Screen Saver add-on that replays flight recordings. `make saver` builds
+# it; `make install-saver` installs it with the recordings for the ScreenSaver
+# preferences to find.
+
+SAVER_SRCS := screensaver/ColumbiaSaver.cpp $(REPLAY_SRCS)
+
+saver: $(OBJDIR)/saver/Columbia
+
+$(OBJDIR)/saver/Columbia: $(SAVER_SRCS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Iui -fPIC -shared -o $@ $^ -lbe -lscreensaver
+	@if command -v mimeset >/dev/null 2>&1; then mimeset -f $@; fi
+
+SAVER_DIR := $(shell finddir B_USER_NONPACKAGED_ADDONS_DIRECTORY 2>/dev/null)/Screen Savers
+DATA_DIR := $(shell finddir B_USER_NONPACKAGED_DATA_DIRECTORY 2>/dev/null)/Columbia
+
+install-saver: saver
+	mkdir -p "$(SAVER_DIR)" "$(DATA_DIR)/recordings"
+	cp $(OBJDIR)/saver/Columbia "$(SAVER_DIR)/Columbia"
+	-cp $(RECORDINGS)/*.colrec "$(DATA_DIR)/recordings/"
+
+$(OBJDIR)/preview/panel: tests/preview/panel_preview.cpp tests/preview/HaikuShim.cpp app/PanelView.cpp app/FlightSession.cpp ui/DSKYPainter.cpp $(FLIGHT_SRCS)
+	@mkdir -p $(OBJDIR)/preview
+	$(CXX) $(CXXFLAGS) -Wno-deprecated-copy -Wno-multichar -Itests/preview/shim -Iui -Icore -Iapp \
+		$$(pkg-config --cflags cairo) -o $@ $^ $$(pkg-config --libs cairo)

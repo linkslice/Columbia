@@ -173,6 +173,8 @@ FlightSim::Log(LogEntry::Kind kind, const std::string& text)
 		fLog.pop_front();
 	if (onLog)
 		onLog(e);
+	for (auto& hook : logHooks)
+		hook(e);
 }
 
 
@@ -1711,6 +1713,12 @@ FlightSim::_SecondTick()
 		Situation s = Situate(*fCSM);
 		if (s.nearMoon && s.apoapsis > 0 && s.apoapsis < 2.0e7)
 			SetPhase(Phase::LunarOrbit);
+	} else if (fPhase == Phase::LunarOrbit && fLM && !fLMDocked && !fLMLanded
+			&& !fLMAscentOnly && MainThrust(*fLM)) {
+		SetPhase(Phase::PoweredDescent);
+	} else if (fPhase == Phase::PoweredDescent && fLM && fLMAscentOnly
+			&& !fLMLanded) {
+		SetPhase(Phase::LunarAscent);       // an abort stage
 	} else if (fPhase == Phase::LunarSurface || fPhase == Phase::LunarAscent) {
 		// Off the surface: ascent while the engine burns, then the
 		// rendezvous until the crew are back together.

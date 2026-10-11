@@ -7,9 +7,10 @@
 #include <algorithm>
 #include <chrono>
 
-static BFont sPlain(false), sBold(true);
+static BFont sPlain(false), sBold(true), sFixed(false, true);
 const BFont* be_plain_font = &sPlain;
 const BFont* be_bold_font = &sBold;
+const BFont* be_fixed_font = &sFixed;
 
 bigtime_t
 system_time()
@@ -65,7 +66,8 @@ BView::_Color()
 static void
 SelectFont(cairo_t* cr, const BFont& font)
 {
-	cairo_select_font_face(cr, "DejaVu Sans", CAIRO_FONT_SLANT_NORMAL,
+	cairo_select_font_face(cr, font.Fixed() ? "DejaVu Sans Mono" : "DejaVu Sans",
+		CAIRO_FONT_SLANT_NORMAL,
 		font.Bold() ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
 	cairo_set_font_size(cr, font.Size() * 0.92);
 }
@@ -223,4 +225,46 @@ BBitmap::AddChild(BView* view)
 {
 	view->SetContext(fCairo);
 	view->ResizeTo(fBounds.Width(), fBounds.Height());
+}
+
+void
+BView::DrawBitmap(const BBitmap* bitmap, BPoint at)
+{
+	cairo_set_source_surface(fCairo, bitmap->Surface(), at.x, at.y);
+	cairo_paint(fCairo);
+}
+
+void
+BView::PushState()
+{
+	cairo_save(fCairo);
+}
+
+void
+BView::PopState()
+{
+	cairo_restore(fCairo);
+}
+
+void
+BView::SetOrigin(BPoint p)
+{
+	cairo_translate(fCairo, p.x, p.y);
+}
+
+void
+BView::SetScale(float scale)
+{
+	cairo_scale(fCairo, scale, scale);
+}
+
+void
+BView::ConstrainClippingRegion(BRegion* region)
+{
+	cairo_reset_clip(fCairo);
+	if (region && region->IsSet()) {
+		BRect r = region->Frame();
+		cairo_rectangle(fCairo, r.left, r.top, r.Width() + 1, r.Height() + 1);
+		cairo_clip(fCairo);
+	}
 }

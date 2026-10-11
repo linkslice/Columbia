@@ -92,6 +92,9 @@ public:
 	// Failures and hardware faults injected by the simulation.
 	bool lrFailed = false;
 	bool ascentArmBreakerOpen = false;   // Apollo 11's broken breaker
+	// Apollo 14's workaround in effect: the LGC no longer acts on the
+	// ABORT discrete (the crew's keyed procedure; channel 30 bit 1 masked).
+	bool abortIgnored = false;
 	// Apollo 11: with the rendezvous radar switch in SLEW/AUTO-TRACK and
 	// the RR CDUs' 800 Hz excitation out of phase with the LGC's, the
 	// shaft and trunnion CDUs hunt continuously, each stealing a counter

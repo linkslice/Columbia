@@ -84,9 +84,26 @@ MissionDirector::MissionDirector(FlightSim& sim, AutoCrew& crew)
 		for (Step& s : fSteps)
 			if (s.name == "Transposition and docking")
 				s.done = true;
+	Phase ph = f.CurrentPhase();
+	// Starting in the LM's part of the flight: the descent (or the stay)
+	// and everything after it.
+	if (ph == Phase::PoweredDescent || ph == Phase::LunarSurface
+			|| ph == Phase::LunarAscent) {
+		for (Step& s : fSteps)
+			s.done = true;
+		const FlightPlan& p = f.Mission().plan;
+		if (ph == Phase::PoweredDescent) {
+			fPDI = p.pdi;
+			_Add("Powered descent", 0, [this]() {
+				if (autopilot)
+					fCrew.Add(AutoCrew::Landing(fPDI));
+			});
+		} else
+			fLanded = p.landing;
+		_AddSurface();
+	}
 	// Already on the way home: everything before the midcourses is done,
 	// and the entry interface comes from the tracking.
-	Phase ph = f.CurrentPhase();
 	if (ph == Phase::TransearthCoast || ph == Phase::Entry) {
 		bool haveReturn = false;
 		for (const Step& s : fSteps)
@@ -444,7 +461,8 @@ MissionDirector::_AddSurface()
 {
 	const FlightPlan& p = f.Mission().plan;
 	_Add("Touchdown", 0, [this]() {
-		fLanded = f.GET();
+		if (fLanded <= 0)
+			fLanded = f.GET();
 		f.Log(LogEntry::Capcom, "Roger, " + f.Mission().lmCallsign
 			+ ". We copy you on the ground.");
 	}, [this]() { return f.LMLanded(); });

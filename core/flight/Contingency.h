@@ -70,7 +70,8 @@ public:
 
 	struct Scheduled {
 		const ContingencySpec* spec;
-		double get;               // when it fires
+		double get;               // when it fires (by the flight plan)
+		double offset = 0;        // seconds after its event, as flown
 		bool fired = false;
 		bool resolved = false;
 		double firedGET = 0;
@@ -91,6 +92,10 @@ public:
 
 private:
 	double _EventGET(Event event) const;
+	// When the event actually happened on this flight (negative: not yet).
+	double _Happened(Event event);
+	double fHappened[16];
+	bool fStarted = false;
 	void _Fire(Scheduled& s);
 
 	FlightSim& f;

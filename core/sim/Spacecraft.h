@@ -72,6 +72,7 @@ const char* CMJetName(int channel, int bit);
 Module MakeSIVB(double propellant = 109000);
 Module MakeSII();
 Module MakeSIC();
+Module MakeSIB();          // Saturn IB first stage
 Module MakeLaunchEscapeTower();
 
 }  // namespace craft

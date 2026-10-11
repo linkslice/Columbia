@@ -188,8 +188,15 @@ Vehicle::Step(double dt, GravityFn gravity)
 	if (dt <= 0)
 		return;
 	if (landed) {
+		// Engines still start, run up and burn propellant on the pad or
+		// the surface (hold-down); the vehicle doesn't move.
+		Vec3 f, t;
+		double flow;
+		_Thrust(&f, &t, &flow, dt, true);
 		fExternalForce = fExternalTorque = Vec3();
-		fSensed = fSensedDV = Vec3();
+		// The ground holds it up: accelerometers read the support force.
+		fSensed = -gravity(position, jd);
+		fSensedDV = fSensed * dt;
 		jd += dt / 86400.0;
 		return;
 	}

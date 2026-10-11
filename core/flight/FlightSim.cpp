@@ -3,6 +3,7 @@
 
 #include "FlightSim.h"
 
+#include "Saturn.h"
 #include "Trajectory.h"
 #include "../gnc/MissionPads.h"
 #include "../gnc/PadLoads.h"
@@ -382,8 +383,38 @@ FlightSim::_PadLoadCMC(const Mat3& refsmmat)
 	gnc::LoadCMCMission(p, load);
 	gnc::SetComputerClock(c, fGET);
 	fCMPGNCS->imu.Align(refsmmat);
+	// On the pad the CMC waits in P02 (gyrocompassing) for the liftoff
+	// discrete, which starts P11.
 	KeySequence(c, "V37E00E");
 	c.Run(1.0);
+	if (fOnPad) {
+		// Prelaunch: with the IMU's discretes live, P01 levels the
+		// platform and hands over to P02, gyrocompassing on the pad until
+		// the liftoff discrete starts P11.
+		auto run = [&](double s) {
+			for (double t = 0; t < s; t += 0.01)
+				fCMPGNCS->Step(0.01);
+		};
+		// The IMU turn-on sequence (cage, warm-up) blocks V37 for ~90 s.
+		run(100.0);
+		// Gyrocompass erasable load: X of the stable member downrange,
+		// the pad's latitude, the azimuth of the vehicle's +Z (all in
+		// revolutions).
+		const Pad& pad = FindPad(fMission.pad);
+		double az = FlightAzimuth() / 360.0;
+		bool ok = p.Double("LAUNCHAZ", az, 0);
+		ok = p.Double("AZIMUTH", az, 0) && ok;
+		ok = p.Double("LATITUDE", pad.lat / 360.0, 0) && ok;
+		if (!ok)
+			Log(LogEntry::Info, "CMC: gyrocompass pad load incomplete");
+		for (char k : std::string("V37E01E")) {
+			int code = k == 'V' ? agc::KEY_VERB : k == 'E' ? agc::KEY_ENTR
+				: k == '0' ? agc::KEY_0 : k - '0';
+			c.PressKey(code);
+			run(0.3);
+		}
+		run(1.0);
+	}
 	fCMCDSKY.Sync(c);
 }
 
@@ -479,7 +510,7 @@ FlightSim::_PlaceOnPad()
 	fPadFixed = up * (world::kREarth + 30.0);
 	Vec3 east = Vec3(0, 0, 1).Cross(up).Unit();
 	Vec3 north = up.Cross(east);
-	double az = fMission.launchAzimuth * kDeg;
+	double az = FlightAzimuth() * kDeg;
 	Vec3 downrange = north * std::cos(az) + east * std::sin(az);
 	// +X up the stack, +Z toward the downrange side (the pitch program
 	// rotates about +Y toward +Z... heads down).
@@ -501,7 +532,7 @@ FlightSim::Start(StartPoint start, std::string* error)
 	bool lunar = plan.tli > 0;
 	double get = 0;
 	switch (start) {
-		case StartPoint::Launch: get = -1.0; break;
+		case StartPoint::Launch: get = -600.0; break;
 		case StartPoint::EarthOrbit: get = lunar ? plan.tli - 3600 : 3 * 3600; break;
 		case StartPoint::TranslunarCoast: get = plan.tli + 4 * 3600; break;
 		case StartPoint::LunarOrbit: get = plan.undock > 0 ? plan.undock - 3600
@@ -562,6 +593,12 @@ FlightSim::Start(StartPoint start, std::string* error)
 		Vec3 downrange = h.Cross(site).Unit();
 		Mat3 lmRef = Mat3::Rows(site, downrange.Cross(site), downrange);
 		_PadLoadLGC(lmRef);
+	}
+	fIU.reset();
+	boosterGuidance = nullptr;
+	if (fBoosterAttached) {
+		fIU.reset(new SaturnIU(*this));
+		boosterGuidance = [this](FlightSim&, double dt) { fIU->Step(dt); };
 	}
 	Log(LogEntry::Event, fMission.name + ": " + StartPointName(start));
 	return true;
@@ -627,9 +664,17 @@ FlightSim::_StateForStart(StartPoint start)
 				fCSM->Merge(lm, kLMInSLA, Mat3());
 				fLMInSLA = true;
 			}
-			fCSM->AddModule(craft::MakeSIVB());
-			fCSM->AddModule(craft::MakeSII());
-			fCSM->AddModule(craft::MakeSIC());
+			if (fMission.saturnV) {
+				fCSM->AddModule(craft::MakeSIVB());
+				fCSM->AddModule(craft::MakeSII());
+				fCSM->AddModule(craft::MakeSIC());
+			} else {
+				Module sivb = craft::MakeSIVB(105000);
+				sivb.dryMass = 12400;     // S-IVB-200 with its IU
+				fCSM->AddModule(sivb);
+				fCSM->AddModule(craft::MakeSIB());
+			}
+			holdDown = true;
 			fBoosterAttached = true;
 			_PlaceOnPad();
 			fPhase = Phase::Prelaunch;
@@ -641,17 +686,7 @@ FlightSim::_StateForStart(StartPoint start)
 			const Pad& pad = FindPad(fMission.pad);
 			Vec3 padR = world::Ephemeris::EarthFixedToInertial(fGETZeroJD)
 				* world::LatLonToVector(pad.lat, pad.lon, 1.0);
-			Vec3 east = Vec3(0, 0, 1).Cross(padR).Unit();
-			Vec3 northP = padR.Cross(east);
-			double az = fMission.launchAzimuth * kDeg;
-			Vec3 n = padR.Cross(northP * std::cos(az) + east * std::sin(az)).Unit();
-			if (plan.loi > 0) {
-				Vec3 m = moonPos(fGETZeroJD + plan.loi / kDay).Unit();
-				Vec3 n2 = padR.Cross(m).Unit();
-				if (n2.Dot(n) < 0)
-					n2 = -n2;
-				n = n2;
-			}
+			Vec3 n = ParkingOrbitNormal();
 			double r = world::kREarth + 185200;
 			double vc = std::sqrt(world::kMuEarth / r);
 			double period = 2 * M_PI * std::sqrt(r * r * r / world::kMuEarth);
@@ -924,6 +959,55 @@ FlightSim::SeparateCSMFromBooster()
 }
 
 
+Vec3
+FlightSim::ParkingOrbitNormal() const
+{
+	const Pad& pad = FindPad(fMission.pad);
+	Vec3 padR = world::Ephemeris::EarthFixedToInertial(fGETZeroJD)
+		* world::LatLonToVector(pad.lat, pad.lon, 1.0);
+	Vec3 east = Vec3(0, 0, 1).Cross(padR).Unit();
+	Vec3 north = padR.Cross(east);
+	double az = fMission.launchAzimuth * kDeg;
+	Vec3 n = padR.Cross(north * std::cos(az) + east * std::sin(az)).Unit();
+	if (fMission.plan.loi > 0) {
+		Vec3 m = world::Ephemeris::MoonPosition(fGETZeroJD
+			+ fMission.plan.loi / kDay).Unit();
+		Vec3 n2 = padR.Cross(m).Unit();
+		if (n2.Dot(n) < 0)
+			n2 = -n2;
+		n = n2;
+	}
+	return n;
+}
+
+
+double
+FlightSim::FlightAzimuth() const
+{
+	const Pad& pad = FindPad(fMission.pad);
+	Vec3 padR = world::Ephemeris::EarthFixedToInertial(fGETZeroJD)
+		* world::LatLonToVector(pad.lat, pad.lon, 1.0);
+	Vec3 east = Vec3(0, 0, 1).Cross(padR).Unit();
+	Vec3 north = padR.Cross(east);
+	Vec3 dir = ParkingOrbitNormal().Cross(padR).Unit();
+	return std::atan2(dir.Dot(east), dir.Dot(north)) / kDeg;
+}
+
+
+bool
+FlightSim::JettisonStage(const std::string& module, double separation)
+{
+	if (fCSM->FindModule(module) == nullptr)
+		return false;
+	// The stage's own frame is the stack frame; it leaves along -X.
+	Vehicle stage = fCSM->Detach({module}, Vec3(), Mat3::RotZ(M_PI), module,
+		separation);
+	fDebris.emplace_back(new Vehicle(stage));
+	Log(LogEntry::Event, module + " separation");
+	return true;
+}
+
+
 bool
 FlightSim::DockingGeometry(double* range, double* rate, double* angle) const
 {
@@ -1163,6 +1247,10 @@ FlightSim::_CanCoast() const
 		return false;
 	if (AnyThrust(*fCSM) || (fLM && AnyThrust(*fLM)))
 		return false;
+	if (fIU && (fIU->CurrentMode() == SaturnIU::Mode::TLI
+			|| (fIU->CurrentMode() == SaturnIU::Mode::TLIPrep
+				&& fGET > fIU->TLIIgnitionGET() - 400)))
+		return false;
 	if (fCSM->position.Length() < world::kREarth + 150000)
 		return false;
 	if (fLM && !fLMDocked && !fLMLanded) {
@@ -1246,11 +1334,17 @@ FlightSim::_Step(double dt)
 				v.velocity = earthRate.Cross(v.position);
 				v.attitude = Quat::FromMatrix(ef) * fPadAttitude;
 			}
-			v.jd = jd;
 			// Engines can still start (liftoff from either body).
 			bool thrust = AnyThrust(v);
-			if (!thrust)
+			if (!thrust || (&v == fCSM.get() && fOnPad && holdDown)) {
+				// Engines running up against the hold-down arms, or
+				// just the accelerometers feeling the ground.
+				v.Step(dt, [this](const Vec3& r, double j) {
+					return _Gravity(r, j); });
+				v.jd = jd;
 				return;
+			}
+			v.jd = jd;
 			v.landed = false;
 			if (&v == fLM.get())
 				fLMLanded = false;
@@ -1340,6 +1434,8 @@ FlightSim::_Coast(double dt)
 		coast(*d);
 	fMoonScene->SetTime(jd);
 	// The computers' clocks run on; their programs are idle.
+	if (boosterGuidance && (fBoosterAttached || fBooster))
+		boosterGuidance(*this, dt);
 	fCMC->AdvanceClock(dt);
 	if (fLGC && fLGCPowered)
 		fLGC->AdvanceClock(dt);

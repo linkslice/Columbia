@@ -35,6 +35,8 @@
 
 namespace flight {
 
+class SaturnIU;
+
 enum class Phase {
 	Prelaunch, Boost, EarthParkingOrbit, TranslunarInjection, TranslunarCoast,
 	LunarOrbit, PoweredDescent, LunarSurface, LunarAscent, Rendezvous,
@@ -181,6 +183,22 @@ public:
 
 	// Saturn launch vehicle guidance (set by the boost module).
 	std::function<void(FlightSim&, double)> boosterGuidance;
+	// The Saturn's Instrument Unit (null once there's no S-IVB to fly).
+	SaturnIU* IU() { return fIU.get(); }
+	// Hold-down arms keep the Saturn on the pad until released.
+	bool holdDown = true;
+	// Drops a spent booster stage (S-IC, S-II, S-IB) or the S-IVB part of
+	// the stack as debris; `separation` m/s along the stack's -X.
+	bool JettisonStage(const std::string& module, double separation);
+	bool TowerAttached() const { return fTowerAttached; }
+	bool OnPad() const { return fOnPad; }
+
+	// The parking orbit's plane: through the pad at liftoff and, for a
+	// lunar mission, the Moon at LOI (what the IU's launch azimuth
+	// achieves). Unit normal along the orbit's angular momentum.
+	sim::Vec3 ParkingOrbitNormal() const;
+	// Launch azimuth that flies into that plane (degrees from north).
+	double FlightAzimuth() const;
 
 	// Platform alignment for a new start point.
 	static sim::Mat3 LVLHReference(const sim::Vec3& r, const sim::Vec3& v);
@@ -248,6 +266,7 @@ private:
 	std::unique_ptr<gnc::PadLoader> fCMCPad, fLGCPad;
 	bool fLGCPowered = false;
 
+	std::unique_ptr<SaturnIU> fIU;
 	sim::EntryAeroState fEntry;
 	double fMaxG = 0;
 	std::deque<LogEntry> fLog;

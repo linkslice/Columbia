@@ -43,7 +43,7 @@ Build()
 		m.plan.splashdown = H(260, 9, 3);
 		m.splashLatitude = 27.54;
 		m.splashLongitude = -64.07;
-		m.csmSpsPropellant = 13250;
+		m.csmSpsPropellant = 4500;     // partial load for Earth orbit
 		m.historical = {"a7-colds"};
 		m.summary = "Eight SPS burns, a rendezvous with the spent S-IVB and "
 			"the first live television from orbit, flown by a crew fighting "

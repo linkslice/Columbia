@@ -89,6 +89,13 @@ bool TargetTEI(const State& orbit, double gamma, Vec3* deltaV, double* eiJD,
 bool TargetMCCMoon(const State& s, double pericynthionAlt, Vec3* deltaV);
 bool TargetMCCEarth(const State& s, double gamma, Vec3* deltaV);
 
+// Two-body Lambert problem (universal variables): the velocities at r1
+// and r2 for a transfer of `tof` seconds, the short way round in the
+// prograde sense of `normal` (any vector along the orbit's angular
+// momentum). Returns false if it doesn't converge.
+bool Lambert(const Vec3& r1, const Vec3& r2, double tof, double mu,
+	const Vec3& normal, Vec3* v1, Vec3* v2 = nullptr);
+
 // LVLH components (x along-track, y -orbit normal, z toward the body) of
 // an inertial vector at a body-relative state.
 Vec3 ToLVLH(const Vec3& rRel, const Vec3& vRel, const Vec3& inertial);

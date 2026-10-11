@@ -607,4 +607,91 @@ TargetMCCEarth(const State& s, double gamma, Vec3* deltaV)
 	return true;
 }
 
+
+namespace {
+
+double
+StumpffC(double z)
+{
+	if (z > 1e-6)
+		return (1 - std::cos(std::sqrt(z))) / z;
+	if (z < -1e-6)
+		return (std::cosh(std::sqrt(-z)) - 1) / -z;
+	return 0.5 - z / 24 + z * z / 720;
+}
+
+double
+StumpffS(double z)
+{
+	if (z > 1e-6) {
+		double q = std::sqrt(z);
+		return (q - std::sin(q)) / (q * q * q);
+	}
+	if (z < -1e-6) {
+		double q = std::sqrt(-z);
+		return (std::sinh(q) - q) / (q * q * q);
+	}
+	return 1.0 / 6 - z / 120 + z * z / 5040;
+}
+
+}  // namespace
+
+
+bool
+Lambert(const Vec3& r1, const Vec3& r2, double tof, double mu,
+	const Vec3& normal, Vec3* v1, Vec3* v2)
+{
+	double R1 = r1.Length(), R2 = r2.Length();
+	if (tof <= 0 || R1 <= 0 || R2 <= 0)
+		return false;
+	double cosd = sim::Clamp(r1.Dot(r2) / (R1 * R2), -1, 1);
+	double dtheta = std::acos(cosd);
+	if (r1.Cross(r2).Dot(normal) < 0)
+		dtheta = 2 * M_PI - dtheta;
+	double A = std::sin(dtheta) * std::sqrt(R1 * R2 / (1 - cosd));
+	if (std::fabs(A) < 1e-9)
+		return false;
+	auto y = [&](double z) {
+		return R1 + R2 + A * (z * StumpffS(z) - 1) / std::sqrt(StumpffC(z));
+	};
+	auto F = [&](double z) {
+		double yz = y(z);
+		if (yz < 0)
+			return -1e30;
+		return std::pow(yz / StumpffC(z), 1.5) * StumpffS(z) + A * std::sqrt(yz)
+			- std::sqrt(mu) * tof;
+	};
+	// Bracket the root in z (F increases with z), then bisect/secant.
+	double lo = -4 * M_PI * M_PI, hi = 4 * M_PI * M_PI * 0.999;
+	while (y(lo) < 0 && lo < 0)
+		lo *= 0.5;
+	// Make sure y is positive somewhere in the bracket.
+	double zlo = lo;
+	for (int i = 0; i < 200 && (y(zlo) < 0 || F(zlo) > 0); i++)
+		zlo += (hi - lo) / 400;
+	if (F(zlo) > 0 || F(hi) < 0)
+		return false;
+	double a = zlo, b = hi;
+	for (int i = 0; i < 200; i++) {
+		double m = 0.5 * (a + b);
+		if (F(m) < 0)
+			a = m;
+		else
+			b = m;
+		if (b - a < 1e-12)
+			break;
+	}
+	double z = 0.5 * (a + b);
+	double yz = y(z);
+	double f = 1 - yz / R1;
+	double g = A * std::sqrt(yz / mu);
+	double gdot = 1 - yz / R2;
+	if (std::fabs(g) < 1e-12)
+		return false;
+	*v1 = (r2 - r1 * f) / g;
+	if (v2)
+		*v2 = (r2 * gdot - r1) / g;
+	return true;
+}
+
 }  // namespace flight

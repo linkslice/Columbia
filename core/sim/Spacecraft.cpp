@@ -401,13 +401,13 @@ MakeSIC()
 	m.name = "S-IC";
 	m.dryMass = 131000;
 	m.cg = Vec3(-82.0, 0, 0);
-	m.inertiaMass = 131000 + 2077000;
+	m.inertiaMass = 131000 + 2145000;
 	m.inertia = Vec3(5.0e6, 2.0e8, 2.0e8);
 	m.referenceArea = 78.5;
 	m.dragCoefficient = 0.5;
 	Tank t;
 	t.name = "S-IC";
-	t.capacity = t.mass = 2077000;
+	t.capacity = t.mass = 2145000;
 	t.position = Vec3(-80.0, 0, 0);
 	m.tanks.push_back(t);
 	for (int i = 0; i < 5; i++) {
@@ -428,6 +428,52 @@ MakeSIC()
 		e.gimbalPitchAxis = Vec3(0, 1, 0);
 		e.gimbalYawAxis = Vec3(0, 0, 1);
 		e.gimbalLimit = 5.15 * kDeg;
+		m.thrusters.push_back(e);
+	}
+	return m;
+}
+
+
+Module
+MakeSIB()
+{
+	// Saturn IB first stage: eight H-1 engines around a cluster of nine
+	// tanks; the outboard four gimbal.
+	Module m;
+	m.name = "S-IB";
+	m.dryMass = 42000;
+	m.cg = Vec3(-38.0, 0, 0);
+	m.inertiaMass = 42000 + 408000;
+	m.inertia = Vec3(1.2e6, 2.6e7, 2.6e7);
+	m.referenceArea = 33.0;
+	m.dragCoefficient = 0.6;
+	Tank t;
+	t.name = "S-IB";
+	t.capacity = t.mass = 408000;
+	t.position = Vec3(-38.0, 0, 0);
+	m.tanks.push_back(t);
+	for (int i = 0; i < 8; i++) {
+		Thruster e;
+		char name[16];
+		std::snprintf(name, sizeof(name), "H-1 %d", i + 1);
+		e.name = name;
+		e.kind = THRUSTER_MAIN;
+		bool outboard = i >= 4;
+		double angle = i * 3.14159265358979 / 2
+			+ (outboard ? 3.14159265358979 / 4 : 0);
+		double rad = outboard ? 2.6 : 1.0;
+		e.position = Vec3(-52, rad * std::cos(angle), rad * std::sin(angle));
+		e.direction = Vec3(1, 0, 0);
+		e.maxThrust = 1030000;
+		e.seaLevelThrust = 911000;
+		e.isp = 289;
+		e.tank = 0;
+		e.rampTime = 1.0;
+		if (outboard) {
+			e.gimbalPitchAxis = Vec3(0, 1, 0);
+			e.gimbalYawAxis = Vec3(0, 0, 1);
+			e.gimbalLimit = 8 * kDeg;
+		}
 		m.thrusters.push_back(e);
 	}
 	return m;

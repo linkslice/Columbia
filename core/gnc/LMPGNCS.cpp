@@ -292,7 +292,7 @@ LMPGNCS::_Outputs(double dt, const RadarScene* scene)
 			if (n == 0)
 				continue;
 			int sign = pending > 0 ? 1 : -1;
-			*axes[i] += sign * n * kCDUCount;
+			*axes[i] += sign * n * 4 * kCDUCount;   // a coarse-align pulse is 4 CDU counts
 			fComputer.SetCell(cells[i], agc::FromInt15(pending - sign * n));
 			moved = true;
 		}

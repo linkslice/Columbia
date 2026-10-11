@@ -227,4 +227,36 @@ LoadLuminaryMission(PadLoader& p, const LMPadLoad& m)
 	SetFlag(p, FLAG_APSFLAG, !m.descentStage);
 }
 
+void
+LoadCMCMission(PadLoader& p, const CMCPadLoad& m)
+{
+	uint64_t cs = uint64_t(std::llround(m.tephem * 100.0));
+	p.Octal("TEPHEM", uint16_t((cs >> 28) & 037777), 0);
+	p.Octal("TEPHEM", uint16_t((cs >> 14) & 037777), 1);
+	p.Octal("TEPHEM", uint16_t(cs & 037777), 2);
+
+	p.Vector("REFSMMAT", m.refsmmat.Row(0), -1);
+	Vec3 r1 = m.refsmmat.Row(1), r2 = m.refsmmat.Row(2);
+	uint16_t hi, lo;
+	double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
+	for (int i = 0; i < 6; i++) {
+		EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
+		p.Octal("REFSMMAT", hi, 6 + 2 * i);
+		p.Octal("REFSMMAT", lo, 7 + 2 * i);
+	}
+	SetFlag(p, FLAG_REFSMFLG, m.refsmmatGood);
+
+	LoadStateVector(p, m.csm, false);
+	if (m.lmState)
+		LoadStateVector(p, m.lm, true);
+	SetFlag(p, FLAG_MOONFLAG, m.csm.moon);
+
+	// Masses in kg, scaled B-16 (V48 N47).
+	p.Single("CSMMASS", m.csmMass, -16);
+	p.Single("LEMMASS", m.lmMass, -16);
+	p.Octal("DAPDATR1", m.dapData1);
+	p.Octal("DAPDATR2", m.dapData2);
+}
+
 }  // namespace gnc
+

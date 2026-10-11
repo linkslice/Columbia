@@ -46,6 +46,23 @@ struct LMPadLoad {
 	bool onSurface = false;
 };
 
+struct CMCPadLoad {
+	double agcTime = 0;          // GET now (s)
+	double tephem = 0;           // s from July 1.0 UT of the year to GET 0
+	sim::Mat3 refsmmat;          // rows: stable-member axes
+	bool refsmmatGood = true;
+	StateVector csm, lm;
+	bool lmState = false;        // load the LM state too
+	double csmMass = 28800;      // kg
+	double lmMass = 0;           // kg (0 when undocked)
+	// V48 N46 digits as octal words (R1 ABCDE, R2 quads/channels).
+	uint16_t dapData1 = 011102;  // CSM alone, 4-jet X, AC roll, 0.5 deg, 0.2 deg/s
+	uint16_t dapData2 = 011111;
+};
+
+// Mission-dependent CMC values (Colossus, Comanche, Artemis).
+void LoadCMCMission(PadLoader& pad, const CMCPadLoad& load);
+
 // Values from the Luminary pad-load deck that do not change by mission.
 void LoadLuminaryInvariants(PadLoader& pad);
 // Mission-dependent values; also sets the relevant flags.

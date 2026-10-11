@@ -304,6 +304,16 @@ CSMJetName(int channel, int bit)
 }
 
 
+const char*
+CMJetName(int channel, int bit)
+{
+	for (const CSMJetSpec& j : kCMJets)
+		if (j.channel == channel && j.bit == bit)
+			return j.name;
+	return nullptr;
+}
+
+
 // ---------------------------------------------------------------------------
 // Saturn V
 

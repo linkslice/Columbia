@@ -62,6 +62,8 @@ constexpr double kSPSIsp = 314.0;
 
 // CSM RCS jet for each CMC channel bit (channel 5: pitch/yaw, 6: roll).
 const char* CSMJetName(int channel, int bit);
+// The CM's own jets on the same bits, live after CM/SM separation.
+const char* CMJetName(int channel, int bit);
 
 // --- Launch vehicle ----------------------------------------------------------
 // Saturn frame shares the CSM's +X (up the stack). Origin at the CSM/SLA

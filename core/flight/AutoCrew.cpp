@@ -100,7 +100,7 @@ PrepareLGCForAscent(FlightSim& f)
 	gnc::SetFlag(pad, gnc::FLAG_APSFLAG, true);
 	gnc::SetFlag(pad, gnc::FLAG_SURFFLAG, true);
 	// V48 R1: LM alone (CSMDOCKED clear).
-	pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~0100);
+	pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~010000);   // CSMDOCKD
 
 	gnc::StateVector csm;
 	csm.position = f.CSMVehicle().position - mp;
@@ -358,6 +358,18 @@ void
 AutoCrew::_Troubleshoot()
 {
 	double get = f.GET();
+	if (std::getenv("RCSDIAG") && f.LMVehicle()) {
+		static double last = 0;
+		if (get - last > 600) {
+			last = get;
+			const Module* asc = f.LMVehicle()->FindModule("LM ascent stage");
+			gnc::LMPGNCS* pg = f.LMPGNCS();
+			if (asc && asc->tanks.size() > 2 && pg)
+				std::printf("RCSDIAG %.0f landed %d RCS A %.1f B %.1f mode %d jets %03o %03o P%s\n",
+					get, (int)f.LMLanded(), asc->tanks[1].mass, asc->tanks[2].mass,
+					(int)pg->panel.mode, pg->JetBits(5), pg->JetBits(6), lgc.Program().c_str());
+		}
+	}
 	auto noticed = [&](const std::string& what, double delay) {
 		auto it = fNoticed.find(what);
 		if (it == fNoticed.end()) {
@@ -1137,7 +1149,7 @@ private:
 	// P64: the commander looks through the LPD and redesignates away from
 	// craters and slopes.
 	bool fLooked = false, fSpotChosen = false;
-	double fLandedAt = -1;
+	double fLastROD = 0;     // GET of the last ROD switch click (P66)
 	double fSpotLat = 0, fSpotLon = 0;
 	double fClickTimer = 0;
 	int fClickAxis = -1, fClickDir = 0;
@@ -1339,7 +1351,10 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 		return true;
 	}
 	if (f.LMLanded()) {
+		// Post-landing: engine arm off, and the mode control to OFF so the
+		// DAP doesn't fire jets against the ground for the whole stay.
 		pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+		pg->panel.mode = gnc::LMPanel::MODE_OFF;
 		return true;
 	}
 	if (f.Lost()) {
@@ -1366,7 +1381,7 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			pad.Double("MASS", lm->Mass(), -16);
 			pad.Single("LEMMASS", lm->Mass(), -16);
 			// The crew's V48 after undocking: LM alone.
-			pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~0100);
+			pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") & ~010000);   // CSMDOCKD
 			c.Report("State vectors uplinked to the LGC");
 			if (std::getenv("PDIDIAG")) {
 				State s{lm->position, lm->velocity, f.JulianDate()};
@@ -1452,6 +1467,48 @@ LandingProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				d.Type("V57E");
 				fV57 = true;
 				c.Report("Radar data good: V57");
+			}
+			if (std::getenv("DESCDIAG") && std::fmod(get, 10.0) < dt) {
+				const MoonScene& ms = f.Moon();
+				Vec3 fx = ms.ToFixed(lm->position);
+				double la, lo, rr;
+				world::VectorToLatLon(fx, &la, &lo, &rr);
+				Vec3 rel = lm->velocity - ms.SurfaceVelocity(lm->position);
+				double hdot = rel.Dot(up);
+				double hc = 0, dh = 0;
+				f.LGCPad()->ReadDouble("HCALC", -24, &hc);
+				f.LGCPad()->ReadDouble("DELTAH", -24, &dh);
+				if (std::fmod(get, 120.0) < dt)
+					for (const Module& m : lm->Modules())
+						for (size_t ti = 0; ti < m.tanks.size(); ti++)
+							std::printf("TANK %s %zu %.1f\n", m.name.c_str(), ti, m.tanks[ti].mass);
+				std::printf("DESCDIAG HCALC %.0f DELTAH %.0f merr %.1f rates %.2f %.2f %.2f ", hc, dh,
+					ManeuverError(*f.LGCPad(), *f.LGC()), lm->rates.x / kDeg, lm->rates.y / kDeg, lm->rates.z / kDeg);
+				std::printf("DESCDIAG %.0f P%s %s h %.0f hdot %.1f vh %.1f thr %.2f"
+					" | %s R1 %s R2 %s R3 %s\n", get - fPDI, d.Program().c_str(),
+					d.VerbNoun().c_str(), rr - f.Terrain().SurfaceRadius(la, lo), hdot,
+					(rel - up * hdot).Length(), [&]() { const sim::Thruster* t = lm->GetThruster("DPS");
+						return t ? t->level * t->throttle : -1.0; }() * (lm->Mass() > 0 ? 1 : 0),
+					d.Program().c_str(), d.Register(0).c_str(), d.Register(1).c_str(),
+					d.Register(2).c_str());
+			}
+			// Luminary 1D and later: V57 puts up N68 and waits for PRO
+			// before the radar data are let in.
+			if (fV57 && !gnc::GetFlag(*f.LGCPad(), gnc::FLAG_LRINH) && d.Idle()
+					&& d.VerbNoun() == "0668" && get - fLastKey > 2) {
+				d.Type("P");
+				fLastKey = get;
+			}
+			// P66 (rate of descent): a click of the ROD switch every couple
+			// of seconds to hold about 3 ft/s down.
+			if (d.Program() == "66" && get - fLastROD > 2.0) {
+				Vec3 rel = lm->velocity - f.Moon().SurfaceVelocity(lm->position);
+				double sink = rel.Dot(up);
+				if (sink > -0.6)
+					pg->RateOfDescentClick(-1);
+				else if (sink < -1.5)
+					pg->RateOfDescentClick(1);
+				fLastROD = get;
 			}
 			fClickTimer += dt;
 			if (d.Program() == "64")
@@ -1802,6 +1859,41 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 		failed = true;
 		return true;
 	}
+	if (std::getenv("ASCDIAG") && std::fmod(get, 10.0) < dt && get > fTIG - 20) {
+		Vehicle* lm = f.LMVehicle();
+		const MoonScene& ms = f.Moon();
+		Vec3 up = ms.LocalVertical(lm->position);
+		Vec3 rel = lm->velocity - ms.SurfaceVelocity(lm->position);
+		Vec3 fx = ms.ToFixed(lm->position);
+		double la, lo, rr;
+		world::VectorToLatLon(fx, &la, &lo, &rr);
+		const sim::Thruster* aps = lm->GetThruster("APS");
+		Vec3 x = lm->ToInertial(Vec3(1, 0, 0));
+		{
+			gnc::PadLoader& pad = *f.LGCPad();
+			Vec3 rn, vn, r0, r1, r2;
+			pad.ReadVector("RN", -29, &rn);
+			pad.ReadVector("VN", -7, &vn);
+			pad.ReadVector("REFSMMAT", -1, &r0);
+			double c[6];
+			for (int i = 0; i < 6; i++) pad.ReadDouble("REFSMMAT", -1, &c[i], 6 + 2 * i);
+			r1 = Vec3(c[0], c[1], c[2]); r2 = Vec3(c[3], c[4], c[5]);
+			Vec3 tr = lm->position - ms.MoonPosition(), tv = lm->velocity - ms.MoonVelocity();
+			Vec3 trs(r0.Dot(tr), r1.Dot(tr), r2.Dot(tr)), tvs(r0.Dot(tv), r1.Dot(tv), r2.Dot(tv));
+			std::printf("ASCDIAG LGC dr %.0f m dv %.1f m/s |rn| %.0f |vn| %.1f true |v| %.1f\n",
+				(rn - tr).Length(), (vn * 100.0 - tv).Length(), rn.Length(), vn.Length() * 100, tv.Length());
+		}
+		{
+			const Module* asc = lm->FindModule("LM ascent stage");
+			if (asc && asc->tanks.size() > 2)
+				std::printf("ASCDIAG RCS A %.1f B %.1f APS %.1f feed %d\n", asc->tanks[1].mass,
+					asc->tanks[2].mass, asc->tanks[0].mass, (int)pg->panel.ascentFeed);
+		}
+		std::printf("ASCDIAG %.0f h %.0f hdot %.1f vh %.1f aps %.2f pitchX-up %.1f mass %.0f | %s\n",
+			get - fTIG, rr - f.Terrain().SurfaceRadius(la, lo), rel.Dot(up),
+			(rel - up * rel.Dot(up)).Length(), aps ? aps->level : -1,
+			std::acos(Clamp(x.Dot(up), -1.0, 1.0)) / kDeg, lm->Mass(), d.Display().c_str());
+	}
 	if (f.Lost()) {
 		status = f.LossReason();
 		failed = true;
@@ -1817,6 +1909,7 @@ AscentProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			if (!d.Idle() || fTimer < 2)
 				break;
 			if (f.LMLanded()) {
+				f.LMPGNCS()->panel.mode = gnc::LMPanel::MODE_AUTO;
 				PrepareLGCForAscent(f);
 				c.Report("P57 realign; surface V48; CSM state vector uplinked");
 			}
@@ -1946,6 +2039,8 @@ public:
 private:
 	bool _Plan(FlightSim& f);
 	bool _Burn(FlightSim& f, double dt);       // null fDVLeft with the THC
+	// A burn still going after five minutes: report why and move on.
+	bool _BurnStalled(AutoCrew& c, FlightSim& f);
 	bool _Lambert(FlightSim& f, Vec3* dv);
 	void _PointLM(FlightSim& f, const Vec3& want);
 
@@ -2047,6 +2142,27 @@ RendezvousProcedure::_Burn(FlightSim& f, double)
 }
 
 
+bool
+RendezvousProcedure::_BurnStalled(AutoCrew& c, FlightSim& f)
+{
+	if (fTimer < 300)
+		return false;
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	const Module* asc = f.LMVehicle()->FindModule("LM ascent stage");
+	char buf[200];
+	std::snprintf(buf, sizeof(buf), "RCS burn stalled with %.1f m/s to go "
+		"(RCS A %.0f kg, B %.0f kg, APS %.0f kg, ASC FEED %s, jets %03o %03o)",
+		fDVLeft.Length(), asc && asc->tanks.size() > 2 ? asc->tanks[1].mass : -1.0,
+		asc && asc->tanks.size() > 2 ? asc->tanks[2].mass : -1.0,
+		asc ? asc->tanks[0].mass : -1.0, pg->panel.ascentFeed ? "open" : "closed",
+		pg->JetBits(5), pg->JetBits(6));
+	c.Report(buf);
+	pg->panel.thc[0] = pg->panel.thc[1] = pg->panel.thc[2] = 0;
+	fTimer = 0;
+	return true;
+}
+
+
 void
 RendezvousProcedure::_PointLM(FlightSim& f, const Vec3& want)
 {
@@ -2114,9 +2230,10 @@ RendezvousProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 				c.Report(buf);
 			}
 			fState = 2;
+			fTimer = 0;
 			break;
 		case 2:
-			if (_Burn(f, dt)) {
+			if (_Burn(f, dt) || _BurnStalled(c, f)) {
 				fState = 3;
 				fTimer = 0;
 			}
@@ -2131,6 +2248,7 @@ RendezvousProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 						fDVLeft.Length());
 					c.Report(buf);
 					fState = 4;
+					fTimer = 0;
 				}
 			}
 			double range = (csm.position - lm.position).Length();
@@ -2141,8 +2259,10 @@ RendezvousProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 			break;
 		}
 		case 4:
-			if (_Burn(f, dt))
+			if (_Burn(f, dt) || _BurnStalled(c, f)) {
 				fState = 3;
+				fTimer = 0;
+			}
 			break;
 		case 5: {   // braking down the line of sight to station keeping
 			Vec3 r = csm.position - lm.position;

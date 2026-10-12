@@ -192,6 +192,10 @@ void
 MissionDirector::_Burn(const std::string& purpose, double impulseGET,
 	const Vec3& dv, bool docked)
 {
+	if (!std::isfinite(dv.Length()) || !std::isfinite(impulseGET)) {
+		f.Log(LogEntry::Capcom, purpose + ": the RTCC has no solution; stand by.");
+		return;
+	}
 	ManeuverPAD pad;
 	pad.purpose = purpose;
 	pad.engine = "SPS";
@@ -257,6 +261,19 @@ MissionDirector::_Build()
 				if (std::getenv("DOIDIAG"))
 					std::printf("%s\n", buf);
 			}
+			// The arrival moves with the targeting: MCC-4 and LOI-1 keep
+			// their places before it.
+			{
+				double arriveGET = (ap.jd - (f.JulianDate() - f.GET() / 86400)) * 86400;
+				for (Step& st : fSteps) {
+					if (st.done)
+						continue;
+					if (st.name == "MCC-4" && name == "MCC-2")
+						st.get = std::max(f.GET() + kH, arriveGET - 6 * kH);
+					if (st.name == "LOI-1")
+						st.get = std::max(f.GET() + kH, arriveGET - 3 * kH);
+				}
+			}
 			if (h.Dot(_LunarPlane()) < 0)
 				f.Log(LogEntry::Capcom, name + ": the approach is in the wrong "
 					"sense for the landing site plane.");
@@ -274,11 +291,19 @@ MissionDirector::_Build()
 	_Add("LOI-1", p.loi - 3 * kH, [this]() {
 		State s = _Now();
 		Approach ap = ClosestMoonApproach(s, 2 * 86400);
-		if (!ap.found)
+		if (!ap.found) {
+			f.Log(LogEntry::Capcom, "LOI-1: no lunar approach in the tracking; "
+				"we'll look again.");
 			return;
+		}
 		Vec3 dv;
-		if (!TargetLOI(ap.state, 313000, 111000, &dv))
+		if (!TargetLOI(ap.state, 313000, 111000, &dv)) {
+			char buf[120];
+			std::snprintf(buf, sizeof(buf), "LOI-1: no solution (pericynthion "
+				"%.0f km); we'll look again.", (ap.radius - world::kRMoon) / 1000);
+			f.Log(LogEntry::Capcom, buf);
 			return;
+		}
 		double jd0 = f.JulianDate() - f.GET() / 86400;
 		fLOI = (ap.jd - jd0) * 86400;
 		_Burn("LOI-1", fLOI, dv, f.LMDocked());
@@ -467,6 +492,63 @@ MissionDirector::_AddSurface()
 			+ ". We copy you on the ground.");
 	}, [this]() { return f.LMLanded(); });
 	double stay = p.liftoff - p.landing;
+	// Lunar orbit plane change (Apollo 15-17's LOPC): the Moon turns under
+	// the CSM's orbit during the stay, carrying the site out of its plane;
+	// a few hours before liftoff the CSM changes plane to pass over the
+	// site again, so the ascent needn't steer sideways.
+	_Add("LOPC", 0, [this, stay]() {
+		double jd0 = f.JulianDate() - f.GET() / 86400;
+		double liftJD = jd0 + (fLanded + stay) / 86400;
+		world::Terrain t;
+		MoonScene ms(t);
+		ms.SetTime(liftJD);
+		Vec3 site = ms.FixedToInertial() * world::LatLonToVector(
+			f.Mission().site.latitude, f.Mission().site.longitude, 1.0);
+		State now = _Now();
+		Vec3 r = now.r - MoonPos(now.jd), v = now.v - MoonVel(now.jd);
+		Vec3 n = r.Cross(v).Unit();
+		double off = std::asin(Clamp(n.Dot(site), -1.0, 1.0)) / kDeg;
+		char buf[160];
+		// The J missions trimmed even small offsets; the shorter stays left
+		// up to a few degrees for the ascent to steer out.
+		bool longStay = f.Mission().type == MissionType::LandingExtended;
+		if (std::fabs(off) < (longStay ? 0.15 : 2.5)) {
+			std::snprintf(buf, sizeof(buf), "RTCC: the site will be %.2f deg out of "
+				"the CSM's plane at liftoff; no plane change.", off);
+			f.Log(LogEntry::Info, buf);
+			return;
+		}
+		Vec3 n2 = (n - site * n.Dot(site)).Unit();
+		Vec3 node = n.Cross(n2).Unit();
+		// The next node at least 20 minutes out: step around the orbit.
+		double period = 2 * M_PI * std::sqrt(std::pow(r.Length(), 3) / world::kMuMoon);
+		double best = -1, bestDot = 0;
+		for (double dt = 1200; dt < 1200 + period; dt += 15) {
+			State at = Propagate(now, dt);
+			Vec3 ru = (at.r - MoonPos(at.jd)).Unit();
+			double d = std::fabs(ru.Dot(node));
+			if (d > bestDot) {
+				bestDot = d;
+				best = dt;
+			}
+		}
+		State at = Propagate(now, best);
+		Vec3 rb = at.r - MoonPos(at.jd), vb = at.v - MoonVel(at.jd);
+		Vec3 ru = rb.Unit();
+		double radial = vb.Dot(ru);
+		double horiz = (vb - ru * radial).Length();
+		Vec3 vNew = n2.Cross(ru) * horiz + ru * radial;
+		Vec3 dv = vNew - vb;
+		std::snprintf(buf, sizeof(buf), "RTCC: LOPC %.1f m/s puts the site in the "
+			"CSM's plane at liftoff (now %.2f deg out)", dv.Length(), off);
+		f.Log(LogEntry::Info, buf);
+		_Burn("LOPC", f.GET() + best, dv, false);
+	}, [this, stay]() {
+		// The J missions' long stays only (Apollo 11-14's ascents steered
+		// out the small offsets of a day or so on the surface).
+		return fLanded > 0 && f.GET() > fLanded + stay - 7 * kH && !fCrew.Busy()
+			&& !f.LMDocked();
+	});
 	_Add("Lunar liftoff", 0, [this]() {
 		// The RTCC times the liftoff for the rendezvous: the CSM just
 		// about overhead at ascent ignition.
@@ -496,6 +578,7 @@ MissionDirector::_AddReturn()
 {
 	const MissionSpec& m = f.Mission();
 	const FlightPlan& p = m.plan;
+	fTEIGiveUp = p.tei + 24 * kH;
 	_Add("TEI", p.tei - 3 * kH, [this]() {
 		State at = Propagate(_Now(), 1800);
 		Vec3 dv;
@@ -503,18 +586,27 @@ MissionDirector::_AddReturn()
 		State burn;
 		// Entry interface at the planned time of day (the recovery line
 		// turns under the returning spacecraft): the planned EI moved by
-		// whole days to the one nearest a 60-hour transit.
+		// whole days to the one nearest the planned transit (Apollo 11's
+		// 60 hours, Apollo 16's 90: a slower return costs less delta-V).
 		const FlightPlan& plan = f.Mission().plan;
 		double jd0 = f.JulianDate() - f.GET() / 86400;
 		double wantEI = 0;
 		if (plan.splashdown > 0) {
 			double base = plan.splashdown - 900;
-			double k = std::round((f.GET() + 1800 + 60 * kH - base) / (24 * kH));
+			double transit = plan.entry > plan.tei && plan.tei > 0
+				? Clamp(plan.entry - plan.tei, 55 * kH, 110 * kH) : 60 * kH;
+			double k = std::round((f.GET() + 1800 + transit - base) / (24 * kH));
 			wantEI = jd0 + (base + k * 24 * kH) / 86400;
 		}
 		if (!TargetTEI(at, -6.5 * kDeg, &dv, &ei, &burn, wantEI)
 				&& !TargetTEI(at, -6.5 * kDeg, &dv, &ei, &burn)) {
 			f.Log(LogEntry::Capcom, "Houston: TEI targeting failed; next rev.");
+			// Try again on the next revolution, for a day.
+			for (Step& st : fSteps)
+				if (st.name == "TEI" && f.GET() < fTEIGiveUp) {
+					st.done = false;
+					st.get = f.GET() + 2 * kH;
+				}
 			return;
 		}
 		fEI = (ei - jd0) * 86400;

@@ -3,6 +3,11 @@
 
 #include "PadLoads.h"
 
+#include "MissionPads.h"
+
+#include <cstring>
+#include <string>
+
 #include <cmath>
 #include <cstdint>
 
@@ -135,6 +140,17 @@ LoadLuminaryInvariants(PadLoader& p)
 	p.Double("LAG/TAU", 0.1, 0);
 	p.Double("MINFORCE", 0.435926, -12);
 	p.Double("MAXFORCE", 2.80238, -12);
+	// Luminary 1D/1E/1F (Apollo 13-17): the automatic P66 after P64 nulls
+	// horizontal velocity with pad-loaded gains, and skips any pass that
+	// starts later than 2LATE466 after PIPTIME. Absent from the Apollo 12
+	// loads, these would be zero: P66 would never throttle. Values: a 5 s
+	// nulling time constant (TAUHZ, cs at 2^11), no command feedback
+	// (QHZ), horizontal acceleration limited to about a 20-degree tilt
+	// (AHZLIM, m/cs/cs at 2^-4), and 1.5 s of grace (cs at 2^28).
+	p.Single("TAUHZ", 500, -11);
+	p.Single("QHZ", 0, 0);
+	p.Single("AHZLIM", 1.62 * 0.364 / 1e4, 4);
+	p.Double("2LATE466", 150, -28);
 	p.Single("RPCRTIME", 300e2, -17);
 	p.Single("RPCRTQSW", .35356, 0);
 
@@ -268,5 +284,26 @@ LoadCMCMission(PadLoader& p, const CMCPadLoad& m)
 	p.Octal("DAPDATR2", m.dapData2);
 }
 
-}  // namespace gnc
 
+int
+ApplyDescentTargetsXZ(PadLoader& pad, const PadWord* table)
+{
+	if (!table || !pad.Has("RBRFGX"))
+		return 0;
+	static const char* const kVectors[] = {"RBRFG", "RAPFG", "VBRFG", "VAPFG",
+		"ABRFG", "AAPFG"};
+	int loaded = 0;
+	for (const char* v : kVectors) {
+		for (const PadWord* w = table; w->name; w++) {
+			if (std::strcmp(w->name, v) != 0 || (w->index >= 2 && w->index <= 3))
+				continue;
+			// Words 0-1: X, 2-3: Y (not kept), 4-5: Z.
+			std::string name = std::string(v) + (w->index < 2 ? "X" : "Z");
+			if (pad.Octal(name, w->value, w->index & 1))
+				loaded++;
+		}
+	}
+	return loaded;
+}
+
+}  // namespace gnc

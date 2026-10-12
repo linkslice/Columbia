@@ -85,6 +85,7 @@ private:
 	bool fInstalled = false;
 	double fTLICutoff = 0;
 	double fLOI = 0;
+	double fTEIGiveUp = 0;     // stop re-trying TEI targeting after this GET
 	double fDOI = 0, fCirc = 0, fPDI = 0;
 	double fLanded = 0, fDocked = 0, fEI = 0;
 	double fSplashLat = 0, fSplashLon = 0;

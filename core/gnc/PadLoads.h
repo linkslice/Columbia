@@ -22,7 +22,8 @@ bool GetFlag(const PadLoader& pad, int flag);
 // Luminary flag numbers (identical across Luminary 069-210).
 enum LuminaryFlag {
 	FLAG_MOONFLAG = 3, FLAG_REFSMFLG = 47, FLAG_CMOONFLG = 123,
-	FLAG_LMOONFLG = 124, FLAG_SURFFLAG = 127, FLAG_APSFLAG = 152
+	FLAG_LMOONFLG = 124, FLAG_SURFFLAG = 127, FLAG_APSFLAG = 152,
+	FLAG_LRINH = 172
 };
 
 struct StateVector {

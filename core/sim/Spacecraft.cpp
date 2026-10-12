@@ -151,7 +151,7 @@ MakeLMAscentStage(const LMConfig& c)
 	Module m;
 	m.name = "LM ascent stage";
 	m.dryMass = c.ascentDry;
-	m.cg = Vec3(1.15, 0, 0.1);
+	m.cg = Vec3(1.15, 0, 0.05);
 	m.inertiaMass = c.ascentDry + c.ascentPropellant + c.rcsPropellant;
 	m.inertia = Vec3(6300, 5400, 4300);
 
@@ -173,7 +173,9 @@ MakeLMAscentStage(const LMConfig& c)
 	apsEngine.name = "APS";
 	apsEngine.kind = THRUSTER_MAIN;
 	apsEngine.position = Vec3(0.1, 0, 0);
-	apsEngine.direction = Vec3(1, 0, 0);
+	// Canted 1.5 degrees toward +Z, so the thrust line passes close to the
+	// ascent stage's centre of mass (which sits forward of the axis).
+	apsEngine.direction = Vec3(1, 0, std::tan(1.5 * kDeg)).Unit();
 	apsEngine.maxThrust = 15568;
 	apsEngine.isp = 311;
 	apsEngine.tank = 0;

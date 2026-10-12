@@ -20,7 +20,7 @@ namespace craft {
 struct LMConfig {
 	double descentDry = 2034;       // kg
 	double descentPropellant = 8248;
-	double ascentDry = 2445;        // with crew
+	double ascentDry = 2265;        // with crew (Apollo 11: 4,888 kg at liftoff)
 	double ascentPropellant = 2353;
 	double rcsPropellant = 287;     // both systems
 };
@@ -50,7 +50,7 @@ struct CSMConfig {
 	double cmMass = 5560;           // kg
 	double smDry = 6110;
 	double spsPropellant = 18410;
-	double smRcsPropellant = 1222;  // four quads
+	double smRcsPropellant = 610;   // four quads (about 1,340 lb)
 	double cmRcsPropellant = 123;   // two systems
 };
 

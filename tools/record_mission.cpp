@@ -86,7 +86,18 @@ main(int argc, char** argv)
 		std::fprintf(stderr, "no Apollo %d\n", number);
 		return 2;
 	}
-	FlightSim f(*m, ropes);
+	// Experiments: another LGC program, or the Apollo 11-14 LM loading.
+	MissionSpec spec = *m;
+	if (const char* lgc = std::getenv("COLUMBIA_LGC"))
+		spec.lgcProgram = lgc;
+	if (std::getenv("COLUMBIA_LIGHT_LM")) {
+		MissionSpec base;
+		spec.lmDescentPropellant = base.lmDescentPropellant;
+		spec.lmDescentDry = base.lmDescentDry;
+	}
+	if (const char* d = std::getenv("COLUMBIA_DATE"))   // YYYY-MM-DD
+		std::sscanf(d, "%d-%d-%d", &spec.year, &spec.month, &spec.day);
+	FlightSim f(spec, ropes);
 	std::string err;
 	if (!f.Start(StartPoint(start), &err)) {
 		std::fprintf(stderr, "start: %s\n", err.c_str());

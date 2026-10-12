@@ -20,6 +20,13 @@ struct PadWord {
 // Terminated by a null name. Null when the mission has no such computer.
 const PadWord* MissionPads(int mission, bool lm);
 
+class PadLoader;
+// Luminary 1E (Apollo 14 on) keeps the descent targets as X and Z pairs
+// (RBRFGX, RBRFGZ, ...) where earlier programs had three-axis vectors
+// (RBRFG ...): loads a table's vectors into that layout. Returns the
+// words loaded (0 when the program uses the vectors).
+int ApplyDescentTargetsXZ(PadLoader& pad, const PadWord* table);
+
 }  // namespace gnc
 
 #endif

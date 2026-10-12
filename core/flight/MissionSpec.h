@@ -74,7 +74,7 @@ struct MissionSpec {
 	double lmDescentPropellant = 8248;
 	double lmAscentPropellant = 2353;
 	double lmDescentDry = 2034;
-	double lmAscentDry = 2445;
+	double lmAscentDry = 2265;       // with crew (Apollo 11: 4,888 kg at liftoff)
 	// What really happened: contingencies that occurred on this flight
 	// (Contingency ids), offered as "fly it as flown".
 	std::vector<std::string> historical;

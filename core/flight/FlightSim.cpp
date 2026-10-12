@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 
 namespace flight {
@@ -328,28 +329,48 @@ KeySequence(agc::Computer& c, const std::string& keys)
 	}
 }
 
-double
-TephemFor(double getZeroJD)
+// The AGC's ephemeris epoch: July 1.0 UT of a year. Programs that keep
+// AZO (the Earth's rotation angle at the epoch) in the rope -- Luminary
+// 178 and 210, Artemis -- were built for one epoch year, whatever the
+// launch date (Apollo 17, in December 1972, still counted from July 1971);
+// the others take a pad-loaded AZO for the launch year's epoch.
+int
+EpochYear(double getZeroJD, const gnc::Rope* rope)
 {
-	// Seconds from July 1.0 UT of the launch year (the AGC's epoch).
+	double azo;
+	if (rope && rope->FixedDP("AZO", &azo)) {
+		int best = 1969;
+		double bestDiff = 1;
+		for (int y = 1966; y <= 1973; y++) {
+			double g = world::Ephemeris::GMST(world::JulianDate(y, 7, 1)) / (2 * M_PI);
+			double d = std::fabs((g - std::floor(g)) - (azo - std::floor(azo)));
+			d = std::min(d, 1 - d);
+			if (d < bestDiff && world::JulianDate(y, 7, 1) <= getZeroJD) {
+				bestDiff = d;
+				best = y;
+			}
+		}
+		return best;
+	}
 	int year = 1969;
-	double jd = getZeroJD;
-	for (int y = 1967; y <= 1973; y++)
-		if (jd >= world::JulianDate(y, 7, 1))
+	for (int y = 1966; y <= 1973; y++)
+		if (getZeroJD >= world::JulianDate(y, 7, 1))
 			year = y;
-	if (jd < world::JulianDate(year, 7, 1))
-		year--;
-	return (jd - world::JulianDate(year, 7, 1)) * kDay;
+	return year;
 }
 
 double
-AzoFor(double getZeroJD)
+TephemFor(double getZeroJD, const gnc::Rope* rope)
 {
-	int year = 1969;
-	for (int y = 1967; y <= 1973; y++)
-		if (getZeroJD >= world::JulianDate(y, 7, 1))
-			year = y;
-	return world::Ephemeris::GMST(world::JulianDate(year, 7, 1)) / (2 * M_PI);
+	// Seconds from the epoch to GET zero.
+	return (getZeroJD - world::JulianDate(EpochYear(getZeroJD, rope), 7, 1)) * kDay;
+}
+
+double
+AzoFor(double getZeroJD, const gnc::Rope* rope)
+{
+	return world::Ephemeris::GMST(world::JulianDate(EpochYear(getZeroJD, rope), 7, 1))
+		/ (2 * M_PI);
 }
 
 }  // namespace
@@ -365,10 +386,20 @@ FlightSim::_PadLoadCMC(const Mat3& refsmmat)
 	c.Run(3.0);
 	gnc::PadLoader& p = *fCMCPad;
 	p.Apply(gnc::MissionPads(fMission.padLoads, false));
+	// Artemis (Apollo 15-17) keeps the SPS impulse-burn model in erasable
+	// memory (Comanche had it in the rope): the impulse of a one-second
+	// burn and the thrust slopes for 0-1 s and 1-6 s, scaled E-2 B-14
+	// newtons. The simulated SPS ramps up and down in half a second each
+	// way, so a burn commanded for T >= 0.5 s delivers thrust x T.
+	if (fMission.cmcProgram.rfind("Artemis", 0) == 0) {
+		p.Single("EIMP1SEC", sim::craft::kSPSThrust / 100, -14);
+		p.Single("EFIMP01", sim::craft::kSPSThrust / 100, -14);
+		p.Single("EFIMP16", sim::craft::kSPSThrust / 100, -14);
+	}
 	gnc::CMCPadLoad load;
 	load.agcTime = fGET;
-	load.tephem = TephemFor(fGETZeroJD);
-	load.azo = AzoFor(fGETZeroJD);
+	load.tephem = TephemFor(fGETZeroJD, &fCMCRope);
+	load.azo = AzoFor(fGETZeroJD, &fCMCRope);
 	load.refsmmat = refsmmat;
 	double jd = JulianDate();
 	fMoonScene->SetTime(jd);
@@ -450,11 +481,12 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 	gnc::PadLoader& p = *fLGCPad;
 	gnc::LoadLuminaryInvariants(p);
 	p.Apply(gnc::MissionPads(fMission.padLoads, true));
+	gnc::ApplyDescentTargetsXZ(p, gnc::MissionPads(fMission.padLoads, true));
 	gnc::LMPadLoad load;
 	load.agcTime = fGET;
 	load.tland = fMission.plan.landing;
-	load.tephem = TephemFor(fGETZeroJD);
-	load.azo = AzoFor(fGETZeroJD);
+	load.tephem = TephemFor(fGETZeroJD, &fLGCRope);
+	load.azo = AzoFor(fGETZeroJD, &fLGCRope);
 	load.rls = world::LatLonToVector(fMission.site.latitude,
 		fMission.site.longitude, fMission.site.radius);
 	load.refsmmat = refsmmat;
@@ -468,8 +500,16 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 	load.csm.position = fCSM->position - origin;
 	load.csm.velocity = fCSM->velocity - originV;
 	load.csm.agcTime = fGET;
-	load.lmMass = fLM ? fLM->Mass() : 15000;
-	load.csmMass = fLM ? fCSM->Mass() : fCSM->Mass() - 15000;
+	// Docked, the LM's stages are modules of the stack.
+	double dockedLM = 0;
+	if (!fLM)
+		for (const Module& m : fCSM->Modules())
+			if (m.name == "LM descent stage" || m.name == "LM ascent stage")
+				dockedLM += m.Mass();
+	if (!fLM && dockedLM <= 0)
+		dockedLM = 15000;
+	load.lmMass = fLM ? fLM->Mass() : dockedLM;
+	load.csmMass = fLM ? fCSM->Mass() : fCSM->Mass() - dockedLM;
 	load.onSurface = fLMLanded;
 	// On the surface the LGC treats the LM as the ascent stage (the
 	// landing program sets APSFLAG); the crew's V48 masses are ascent ones.
@@ -479,9 +519,25 @@ FlightSim::_PadLoadLGC(const Mat3& refsmmat)
 		if (a)
 			load.lmMass = a->Mass();
 	}
+	// Apollo 13-17 fly on Apollo 12's descent targets (their own pad loads
+	// aren't in the NASSP data). The J-mission LM is heavier; give its
+	// braking phase proportionally more ground range, as their targeting
+	// did, or the full-throttle braking arrives too fast.
+	if (fMission.padLoads > 12 && load.descentStage) {
+		// What those targets assume: the Apollo 11/12 LM.
+		const MissionSpec base;
+		const craft::LMConfig parts;
+		const double kApollo12LM = base.lmDescentDry + base.lmDescentPropellant
+			+ base.lmAscentDry + base.lmAscentPropellant + parts.rcsPropellant;
+		double ratio = load.lmMass / kApollo12LM;
+		double rz;
+		if (ratio > 1.01 && p.ReadDouble("RIGNZ", -24, &rz))
+			p.Double("RIGNZ", rz * ratio, -24);
+	}
 	gnc::LoadLuminaryMission(p, load);
 	gnc::SetComputerClock(c, fGET);
-	p.Octal("DAPBOOLS", fLMDocked ? 002102 : 002002);
+	// CSMDOCKD (bit 13) while docked.
+	p.Octal("DAPBOOLS", fLMDocked ? 012002 : 002002);
 	fLMPGNCS->imu.Align(refsmmat);
 	KeySequence(c, "V37E00E");
 	c.Run(1.0);
@@ -508,6 +564,10 @@ FlightSim::PowerUpLGC()
 	Vec3 downrange = h.Cross(site).Unit();
 	Mat3 lmRef = Mat3::Rows(site, downrange.Cross(site), downrange);
 	_PadLoadLGC(lmRef);
+	// Docked, the CSM holds the stack: the LM's mode control stays OFF
+	// (its jets would otherwise fight the CSM's for hours).
+	if (fLMDocked && fLMPGNCS)
+		fLMPGNCS->panel.mode = gnc::LMPanel::MODE_OFF;
 	Log(LogEntry::Event, fMission.lmCallsign + " powered up");
 }
 
@@ -630,6 +690,9 @@ FlightSim::Start(StartPoint start, std::string* error)
 		|| start == StartPoint::LunarSurface || start == StartPoint::LunarAscent;
 	if (lgcOn)
 		PowerUpLGC();
+	// Just landed: the post-landing checklist has the mode control OFF.
+	if (start == StartPoint::LunarSurface && fLMPGNCS)
+		fLMPGNCS->panel.mode = gnc::LMPanel::MODE_OFF;
 	fIU.reset();
 	boosterGuidance = nullptr;
 	if (fBoosterAttached) {
@@ -651,11 +714,13 @@ FlightSim::_StateForStart(StartPoint start)
 	auto moonVel = [](double j) { return world::Ephemeris::MoonVelocity(j); };
 
 	// Lunar orbit geometry: retrograde, over the site at landing time.
+	// Over the site at landing (or at planeJD, when given: an orbit
+	// adjusted, as the J missions' plane changes did, for the liftoff).
 	auto siteOrbit = [&](double atJD, double alt, double leadDeg, Vec3* r,
-		Vec3* v) {
+		Vec3* v, double planeJD = 0) {
 		world::Terrain t;
 		MoonScene ms(t);
-		double landJD = fGETZeroJD + plan.landing / kDay;
+		double landJD = planeJD > 0 ? planeJD : fGETZeroJD + plan.landing / kDay;
 		ms.SetTime(landJD);
 		Vec3 site = ms.FixedToInertial() * world::LatLonToVector(
 			fMission.site.latitude, fMission.site.longitude, 1.0);
@@ -874,8 +939,8 @@ FlightSim::_StateForStart(StartPoint start)
 			double ref = start == StartPoint::LunarAscent
 				? fGETZeroJD + plan.liftoff / kDay : jd;
 			Vec3 r, v;
-			siteOrbit(jd, 111000, lead, &r, &v);
-			(void)ref;
+			siteOrbit(jd, 111000, lead, &r, &v,
+				start == StartPoint::LunarAscent ? ref : 0);
 			fCSM->position = r;
 			fCSM->velocity = v;
 			fCSM->attitude = attitudeAlong(r - moonPos(jd), v - moonVel(jd));
@@ -1214,6 +1279,12 @@ FlightSim::UndockLM()
 	fLM.reset(new Vehicle(lm));
 	fLMDocked = false;
 	_UpdatePGNCSAttachments();
+	if (fLMPGNCS && fLMPGNCS->panel.mode == gnc::LMPanel::MODE_OFF)
+		fLMPGNCS->panel.mode = gnc::LMPanel::MODE_AUTO;
+	// The crew's V48 after undocking: the LM alone (CSMDOCKD, bit 13, off),
+	// or the DAP flies the light LM with the docked stack's gains.
+	if (fLGCPad && fLGCPowered)
+		fLGCPad->Octal("DAPBOOLS", fLGCPad->Word("DAPBOOLS") & ~010000);
 	Log(LogEntry::Event, "Undocked: " + fMission.lmCallsign);
 	return true;
 }

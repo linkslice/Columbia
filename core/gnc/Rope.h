@@ -74,6 +74,7 @@ public:
 	// Applies a table of pad-loaded words (see MissionPads.h); names the
 	// program doesn't have are skipped. Returns the number applied.
 	int Apply(const struct PadWord* table);
+	bool Has(const std::string& name) const { return fRope.Has(name); }
 
 	// Names that were missing from the program (for diagnostics).
 	const std::vector<std::string>& Missing() const { return fMissing; }

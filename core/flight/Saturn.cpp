@@ -286,7 +286,19 @@ SaturnIU::Step(double dt)
 		case Mode::Orbit:
 		case Mode::TLIPrep: _Orbit(dt); break;
 		case Mode::TLI: _TLI(dt); break;
-		case Mode::Coast: _Orbit(dt); break;
+		case Mode::Coast:
+			if (std::getenv("TLIDIAG") && f.GET() - fTLICutoffGET >= 10
+					&& f.GET() - fTLICutoffGET < 10 + dt) {
+				Vehicle* c = Carrier();
+				State st{c->position, c->velocity, f.JulianDate()};
+				Vec3 vreq;
+				if (Lambert(st.r, fAim.r, (fAim.jd - st.jd) * kDay, world::kMuEarth,
+						fPlane, &vreq))
+					std::printf("TLIDIAG post-cutoff error %.2f m/s\n",
+						(vreq + fBias - st.v).Length());
+			}
+			_Orbit(dt);
+			break;
 		case Mode::Safed: break;
 	}
 }

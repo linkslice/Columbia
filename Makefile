@@ -127,6 +127,10 @@ $(TESTDIR)/session_test: $(OBJDIR)/tests/session_test.o $(OBJDIR)/app/FlightSess
 	@mkdir -p $(TESTDIR)
 	$(CXX) $(CXXFLAGS) -pthread -o $@ $^
 
+$(TESTDIR)/decision_test: $(OBJDIR)/tests/decision_test.o $(OBJDIR)/app/FlightSession.o $(FLIGHT_OBJS)
+	@mkdir -p $(TESTDIR)
+	$(CXX) $(CXXFLAGS) -pthread -o $@ $^
+
 $(TESTDIR)/drill_test: $(OBJDIR)/tests/drill_test.o $(OBJDIR)/app/FlightSession.o $(FLIGHT_OBJS)
 	@mkdir -p $(TESTDIR)
 	$(CXX) $(CXXFLAGS) -pthread -o $@ $^

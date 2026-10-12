@@ -282,6 +282,7 @@ private:
 	bool fHasLM = false;
 	bool fLMDocked = false;
 	bool fLMInSLA = false;
+	bool fMoonVisited = false;     // through the Moon's sphere (flyby)
 	bool fLMLanded = false;
 	bool fLMAscentOnly = false;
 	bool fBoosterAttached = false;

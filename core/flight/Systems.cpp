@@ -88,6 +88,8 @@ CSMSystems::CSMSystems()
 double
 CSMSystems::Demand() const
 {
+	if (poweredDown)
+		return 0.5;
 	double a = 18;   // instrumentation, displays, C&W, essentials
 	if (loads.computer) a += 3.5;
 	if (loads.imu) a += 9;
@@ -163,6 +165,13 @@ CSMSystems::Update(double dt, int crewAboard, Cabin& cabin, LiOH& lioh)
 			wasteWater += potableWater - 16;
 			potableWater = 16;
 		}
+	}
+	if (poweredDown && powerTransfer) {
+		// LM power charging the entry batteries (about an amp each).
+		for (Battery* b : {&batteryA, &batteryB, &batteryC})
+			if (!b->failed)
+				b->charge = std::min(b->capacity, b->charge + 1.0 * hours);
+		fromBatteries = 0;
 	}
 	if (fromBatteries > 0) {
 		double ah = fromBatteries * 1000 / 28.0 * hours;

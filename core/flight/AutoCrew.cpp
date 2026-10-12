@@ -941,6 +941,262 @@ AutoCrew::CSMBurn(double tig, const Vec3& dv, const std::string& label)
 
 
 // ---------------------------------------------------------------------------
+// Docked DPS burn (the LM driving the stack)
+
+
+namespace {
+
+class DockedDPSBurnProcedure : public Procedure {
+public:
+	DockedDPSBurnProcedure(double tig, const Vec3& dv, const std::string& label)
+		: fTIG(tig), fDV(dv), fLabel(label) {}
+	std::string Name() const override { return fLabel; }
+	double WakeGET(FlightSim&) const override { return fTIG - 1500; }
+	bool Step(AutoCrew& c, FlightSim& f, double dt) override;
+
+private:
+	double fTIG;
+	Vec3 fDV;               // LVLH m/s
+	std::string fLabel;
+	int fState = 0;
+	gnc::StateVector fSV;
+	double fTimer = 0;
+	double fLastKey = -100;
+	double fLastManeuver = -1e9;
+	bool fArmed = false;
+	double fIgnition = -1, fCutoff = -1;
+};
+
+
+bool
+DockedDPSBurnProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
+{
+	DSKYDriver& d = c.lgc;
+	fTimer += dt;
+	double get = f.GET();
+	gnc::LMPGNCS* pg = f.LMPGNCS();
+	if (std::getenv("DPSDIAG") && std::fmod(get, 20.0) < dt)
+	{
+		const sim::Thruster* dps = f.CSMVehicle().GetThruster("DPS");
+		const Module* asc = f.CSMVehicle().FindModule("LM ascent stage");
+		std::printf("DPSDIAG %.0f state %d timer %.0f P%s %s | dps %.2f merr %.1f "
+			"rcs %.0f %.0f mode %d rates %.2f %.2f %.2f\n", get, fState, fTimer,
+			d.Program().c_str(), d.Display().c_str(), dps ? dps->level : -1,
+			f.LGC() ? ManeuverError(*f.LGCPad(), *f.LGC()) : -1,
+			asc && asc->tanks.size() > 2 ? asc->tanks[1].mass : -1,
+			asc && asc->tanks.size() > 2 ? asc->tanks[2].mass : -1,
+			pg ? int(pg->panel.mode) : -1, f.CSMVehicle().rates.x / kDeg,
+			f.CSMVehicle().rates.y / kDeg, f.CSMVehicle().rates.z / kDeg);
+	}
+	if (!pg || !f.LGC() || !f.LMDocked()) {
+		status = "no docked LM";
+		failed = true;
+		return true;
+	}
+	switch (fState) {
+		case 0: {
+			// Houston uplinks the stack's state vector to the LGC; the
+			// platform is aligned with X along the burn.
+			Vehicle& v = f.CSMVehicle();
+			bool moon = f.Situate(v).nearMoon;
+			State s{v.position, v.velocity, f.JulianDate()};
+			State atTig = Propagate(s, fTIG - get);
+			Vec3 rT = atTig.r - (moon ? MoonPos(atTig.jd) : Vec3());
+			Vec3 vT = atTig.v - (moon ? MoonVel(atTig.jd) : Vec3());
+			Vec3 dvI = FromLVLH(rT, vT, fDV);
+			Vec3 x = dvI.Length() > 1e-6 ? dvI.Unit() : vT.Unit();
+			Vec3 y = rT.Cross(x);
+			if (y.Length() < 1e-3)
+				y = Vec3(0, 0, 1).Cross(x);
+			y = y.Unit();
+			Mat3 refsmmat = Mat3::Rows(x, y, x.Cross(y));
+			gnc::PadLoader& pad = *f.LGCPad();
+			pad.Vector("REFSMMAT", refsmmat.Row(0), -1);
+			Vec3 r1 = refsmmat.Row(1), r2 = refsmmat.Row(2);
+			double comps[6] = {r1.x, r1.y, r1.z, r2.x, r2.y, r2.z};
+			for (int i = 0; i < 6; i++) {
+				uint16_t hi, lo;
+				gnc::EncodeDP(std::ldexp(comps[i], -1), &hi, &lo);
+				pad.Octal("REFSMMAT", hi, 6 + 2 * i);
+				pad.Octal("REFSMMAT", lo, 7 + 2 * i);
+			}
+			gnc::SetFlag(pad, gnc::FLAG_REFSMFLG, true);
+			pg->imu.Align(refsmmat);
+			gnc::StateVector sv;
+			sv.position = v.position - (moon ? f.Moon().MoonPosition() : Vec3());
+			sv.velocity = v.velocity - (moon ? f.Moon().MoonVelocity() : Vec3());
+			sv.agcTime = get;
+			sv.moon = moon;
+			gnc::LoadStateVector(pad, sv, true);
+			gnc::SetFlag(pad, gnc::FLAG_MOONFLAG, moon);
+			fSV = sv;
+			// Masses and the docked DAP (CSMDOCKD); the LM flies the stack.
+			double lmMass = 0;
+			for (const Module& m : v.Modules())
+				if (m.name == "LM descent stage" || m.name == "LM ascent stage")
+					lmMass += m.Mass();
+			pad.Double("MASS", v.Mass(), -16);
+			pad.Single("LEMMASS", lmMass, -16);
+			pad.Single("CSMMASS", v.Mass() - lmMass, -16);
+			pad.Octal("DAPBOOLS", pad.Word("DAPBOOLS") | 010000);
+			pg->panel.mode = gnc::LMPanel::MODE_AUTO;
+			pg->panel.pgnsControl = true;
+			f.CMPGNCS().panel.scContCMC = false;
+			f.CMPGNCS().panel.mode = gnc::CMPanel::MODE_FREE;
+			c.Report(fLabel + ": LGC state vector and REFSMMAT uplinked");
+			d.SelectProgram(0);
+			fState = 1;
+			fTimer = 0;
+			break;
+		}
+		case 1:
+			if (fTimer > 300) {
+				status = "the LGC never came ready (" + d.Display() + ")";
+				failed = true;
+				return true;
+			}
+			if (!d.Ready() || fTimer < 2)
+				break;
+			if (!UplinkTook(*f.LGCPad(), fSV, true)) {
+				gnc::LoadStateVector(*f.LGCPad(), fSV, true);
+				fTimer = 0;
+				break;
+			}
+			d.SelectProgram(30);
+			fState = 2;
+			fTimer = 0;
+			break;
+		case 2:   // P30: TIG, delta-V
+			if (!d.Idle() || fTimer < 2)
+				break;
+			if (d.Flashing() && d.VerbNoun().substr(2) == "33") {
+				d.Type(DSKYDriver::TimeEntry(fTIG) + "P");
+				fState = 3;
+				fTimer = 0;
+			} else if (fTimer > 60) {
+				status = "P30 never asked for TIG (" + d.Display() + ")";
+				failed = true;
+				return true;
+			}
+			break;
+		case 3:
+			if (!d.Idle() || fTimer < 1)
+				break;
+			if (d.Flashing() && d.VerbNoun().substr(2) == "81") {
+				auto e = [](double ms) {
+					return DSKYDriver::Signed(std::lround(ms / 0.3048 * 10)); };
+				d.Type("V25E" + e(fDV.x) + "E" + e(fDV.y) + "E" + e(fDV.z) + "EP");
+				fState = 4;
+				fTimer = 0;
+			}
+			break;
+		case 4:   // PRO through P30's displays to P00 (or V37 flashing)
+			if (!d.Idle() || fTimer < 1.5)
+				break;
+			if (d.Program() != "00"
+					&& !(d.Flashing() && d.VerbNoun().substr(0, 2) == "37")) {
+				if (d.Flashing()) {
+					if (d.VerbNoun().substr(2) == "42")
+						c.Report(fLabel + ": P30 " + d.Display());
+					d.Type("P");
+					fTimer = 0;
+				} else if (fTimer > 120) {
+					status = "P30 didn't finish (" + d.Display() + ")";
+					failed = true;
+					return true;
+				}
+				break;
+			}
+			if (get < fTIG - 600)
+				break;
+			d.SelectProgram(40);
+			fState = 5;
+			fTimer = 0;
+			break;
+		case 5: {   // P40 through the burn
+			if (!fArmed && get > fTIG - 60) {
+				pg->panel.engineArm = gnc::LMPanel::ARM_DESCENT;
+				pg->panel.autoThrottle = true;
+				fArmed = true;
+				c.Report(fLabel + ": engine arm, descent");
+			}
+			if (pg->DescentEngineOn() && fIgnition < 0) {
+				fIgnition = get;
+				c.Report(fLabel + ": DPS ignition");
+			}
+			// The docked throttle profile (Apollo 13's PC+2): five seconds at
+			// the trim setting, 40% for 21, then full throttle -- by hand;
+			// short burns stay at the trim setting.
+			if (fIgnition >= 0 && fCutoff < 0 && fDV.Length() > 15) {
+				double t = get - fIgnition;
+				if (t > 26) {
+					pg->panel.autoThrottle = false;
+					pg->panel.manualThrottle = 1.0;
+				} else if (t > 5) {
+					pg->panel.autoThrottle = false;
+					pg->panel.manualThrottle = 0.33;
+				}
+			}
+			if (!pg->DescentEngineOn() && fIgnition >= 0 && fCutoff < 0
+					&& get > fIgnition + 2) {
+				fCutoff = get;
+				char buf[80];
+				std::snprintf(buf, sizeof(buf), ": cutoff after %.1f s",
+					fCutoff - fIgnition);
+				c.Report(fLabel + buf);
+				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+				pg->panel.autoThrottle = true;
+				pg->panel.manualThrottle = 0;
+			}
+			if (!d.Idle() || !d.Flashing() || get - fLastKey < 2
+					|| d.StableFor() < 0.8)
+				break;
+			std::string vn = d.VerbNoun();
+			std::string key;
+			if (vn == "5018") {
+				if (ManeuverError(*f.LGCPad(), *f.LGC()) < 2.0)
+					key = "E";
+				else if (get - fLastManeuver > 120) {
+					key = "P";
+					fLastManeuver = get;
+				}
+			} else if (vn.substr(0, 2) == "99" || vn.substr(0, 2) == "50"
+					|| vn.substr(2) == "40" || vn.substr(2) == "85") {
+				key = "P";
+			} else if (vn.substr(0, 2) == "37" && fCutoff > 0) {
+				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+				// Back to drifting (the passive thermal roll) between burns.
+				pg->panel.mode = gnc::LMPanel::MODE_OFF;
+				return true;
+			}
+			if (!key.empty()) {
+				d.Type(key);
+				fLastKey = get;
+			}
+			if (get > fTIG + 1800) {
+				status = fIgnition < 0 ? "no ignition (" + d.Display() + ")"
+					: "no cutoff (" + d.Display() + ")";
+				failed = true;
+				pg->panel.engineArm = gnc::LMPanel::ARM_OFF;
+				return true;
+			}
+			break;
+		}
+	}
+	return false;
+}
+
+}  // namespace
+
+
+std::unique_ptr<Procedure>
+AutoCrew::DockedDPSBurn(double tig, const Vec3& dv, const std::string& label)
+{
+	return std::unique_ptr<Procedure>(new DockedDPSBurnProcedure(tig, dv, label));
+}
+
+
+// ---------------------------------------------------------------------------
 // Entry: P61 - P67
 
 
@@ -1070,6 +1326,27 @@ EntryProcedure::Step(AutoCrew& c, FlightSim& f, double dt)
 		case 4: {
 			if (f.CurrentPhase() == Phase::Recovery || f.Lost())
 				return true;
+			if (std::getenv("ENTRYTRACE") && std::fmod(get, 20.0) < dt) {
+				const Vehicle& cm = f.CSMVehicle();
+				Vec3 x = cm.ToInertial(Vec3(1, 0, 0));
+				std::printf("ENTRYTRACE %.0f alt %.0f km v %.0f g %.2f X.vel %.2f P%s %s"
+					" FAILREG %05o %05o %05o\n",
+					get, (cm.position.Length() - world::kREarth) / 1000,
+					cm.velocity.Length(), f.EntryState().gLoad,
+					x.Dot(cm.velocity.Unit()), d.Program().c_str(), d.Display().c_str(),
+					f.CMCPad().Word("FAILREG", 0), f.CMCPad().Word("FAILREG", 1),
+					f.CMCPad().Word("FAILREG", 2));
+				bool mf = gnc::GetFlag(f.CMCPad(), gnc::FLAG_MOONFLAG);
+				bool cmf = gnc::GetFlag(f.CMCPad(), gnc::FLAG_CMOONFLG);
+				Vec3 rc;
+				f.CMCPad().ReadVector("RRECTCSM", cmf ? -27 : -29, &rc);
+				Vec3 truth = cm.position - (cmf ? f.Moon().MoonPosition() : Vec3());
+				double tet = 0;
+				f.CMCPad().ReadDouble("TETCSM", -28, &tet);
+				std::printf("ENTRYTRACE   CMC moonflag %d cmoonflg %d |RRECT| %.0f km, "
+					"err vs truth now %.0f km, TET %.0f (GET %.0f)\n", mf, cmf,
+					rc.Length() / 1000, (rc - truth).Length() / 1000, tet / 100, get);
+			}
 			if (!d.Idle() || !d.Flashing() || get - fLastKey < 2
 					|| d.StableFor() < 0.8)
 				break;

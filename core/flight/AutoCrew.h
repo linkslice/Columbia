@@ -126,6 +126,11 @@ public:
 	// The RTCC's liftoff time: the first ascent ignition after `earliest`
 	// with the CSM leading the landed LM by `phase` degrees.
 	static double LiftoffTime(FlightSim& f, double earliest, double phase);
+	// A DPS burn with the CSM docked, flown by the LGC (Apollo 9's docked
+	// burns, Apollo 13's lifeboat): uplinked state vector and REFSMMAT,
+	// V48 for the docked stack, P30 with the PAD, P40 through cutoff.
+	static std::unique_ptr<Procedure> DockedDPSBurn(double tig,
+		const sim::Vec3& dvLVLH, const std::string& label);
 	static std::unique_ptr<Procedure> CSMBurn(double tig, const sim::Vec3& dvLVLH,
 		const std::string& label);
 	// Entry: CM/SM separation, P61 to P67 to the splash point.

@@ -115,13 +115,14 @@ main(int argc, char** argv)
 	recorder.Attach();
 	AutoCrew crew(f);
 	crew.Install();
+	crew.verbose = std::getenv("CREW_VERBOSE") != nullptr;
 	ContingencyManager contingencies(f, difficulty, seed);
 	contingencies.Plan();
 	f.secondHooks.push_back([&](FlightSim&, double) { contingencies.Tick(); });
 	MissionDirector director(f, crew);
 	director.Install();
 
-	double end = m->plan.splashdown > 0 ? m->plan.splashdown + 6 * 3600
+	double end = m->plan.splashdown > 0 ? m->plan.splashdown + 24 * 3600
 		: f.GET() + 12 * 86400;
 	f.SetWarp(100000);
 	while (!f.Lost() && f.CurrentPhase() != Phase::Recovery && f.GET() < end)

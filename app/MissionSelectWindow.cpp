@@ -124,6 +124,9 @@ MissionSelectWindow::MissionSelectWindow(const std::string& ropes)
 	fWatch = new BCheckBox("watch", "Let the automatic crew fly it (watch)",
 		nullptr);
 	fRealTime = new BCheckBox("realtime", "Real time only (no time warp)", nullptr);
+	fDecide = new BCheckBox("decide", "Make Flight's calls yourself (aborts, "
+		"burns, go/no-go)", nullptr);
+	fDecide->SetValue(B_CONTROL_ON);
 
 	fSites = new BPopUpMenu("sites");
 	for (const LandingSite& s : CandidateSites())
@@ -154,6 +157,7 @@ MissionSelectWindow::MissionSelectWindow(const std::string& ropes)
 			.Add(fDifficultyBlurb)
 			.Add(fWatch)
 			.Add(fRealTime)
+			.Add(fDecide)
 			.AddGlue()
 			.AddGroup(B_HORIZONTAL, B_USE_SMALL_SPACING)
 				.Add(recField)
@@ -332,6 +336,7 @@ MissionSelectWindow::_Fly()
 	o.difficulty = Difficulty(diff);
 	o.autopilot = fWatch->Value() == B_CONTROL_ON;
 	o.realTimeOnly = fRealTime->Value() == B_CONTROL_ON;
+	o.askDecisions = fDecide->Value() == B_CONTROL_ON;
 	o.ropes = fRopes;
 	FlightWindow* w = new FlightWindow(o);
 	if (!w->Started()) {

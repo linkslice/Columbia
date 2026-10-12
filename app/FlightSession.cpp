@@ -59,6 +59,7 @@ FlightSession::Start(const FlightOptions& options, std::string* error)
 	});
 	fDirector.reset(new MissionDirector(*fSim, *fCrew));
 	fDirector->Install();
+	fDirector->waitForDecisions = fOptions.askDecisions;
 	fDrillPending = fDrill != nullptr;
 	fDrillFailed = false;
 	fDrillStartGET = fSim->GET();
@@ -67,6 +68,7 @@ FlightSession::Start(const FlightOptions& options, std::string* error)
 			+ ". Setting it up...");
 		SetAutopilot(true);
 		fWarp = 100000;
+		fDirector->waitForDecisions = false;
 		fSim->stopWhen = [this]() { return fDrillPending && _CheckDrill(); };
 	} else {
 		SetAutopilot(fOptions.autopilot);
@@ -181,7 +183,12 @@ FlightSession::_Run()
 		double dt = std::chrono::duration<double>(now - last).count();
 		last = now;
 		dt = std::min(dt, 0.1);
-		if (!fPaused && !fOver) {
+		bool waiting;
+		{
+			std::lock_guard<std::recursive_mutex> g(fLock);
+			waiting = fDirector->PendingDecision() != nullptr;
+		}
+		if (!fPaused && !fOver && !waiting) {
 			// Small slices with the lock let go in between, so the windows
 			// stay responsive however much simulation a slice holds.
 			double left = dt;
@@ -204,12 +211,29 @@ FlightSession::_Run()
 
 
 bool
+FlightSession::DecisionPending()
+{
+	std::lock_guard<std::recursive_mutex> g(fLock);
+	return fDirector && fDirector->PendingDecision() != nullptr;
+}
+
+
+bool
+FlightSession::Decide(const std::string& id, const std::string& key)
+{
+	std::lock_guard<std::recursive_mutex> g(fLock);
+	return fDirector && fDirector->Decide(id, key);
+}
+
+
+bool
 FlightSession::_CheckDrill()
 {
 	if (DrillReady(*fDrill, *fSim, *fCrew, *fDirector)) {
 		fDrillPending = false;
 		fWarp = 1;
 		fSim->SetWarp(1);
+		fDirector->waitForDecisions = fOptions.askDecisions;
 		SetAutopilot(fOptions.autopilot);
 		fSim->Log(LogEntry::Event, std::string("Drill: ") + fDrill->name
 			+ (fOptions.autopilot ? ". Watch the crew." : ". You have the controls."));

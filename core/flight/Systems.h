@@ -106,6 +106,10 @@ public:
 	bool sceAux = false;       // Signal Conditioning Equipment on AUX
 	bool attached = true;      // service module still on
 	bool powerTransfer = false; // drawing on the LM (lifeboat)
+	// Fully powered down (Apollo 13's CM for four days): only the cryo
+	// and post-landing sensors, and with LM power on the umbilical the
+	// entry batteries charge.
+	bool poweredDown = false;
 
 	// Current demand in amperes at 28 V for the present loads.
 	double Demand() const;

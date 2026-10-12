@@ -1815,10 +1815,24 @@ FlightSim::_SecondTick()
 		if (fCSM->position.Length() < world::kREarth + 121920)
 			SetPhase(Phase::Entry);
 	}
+	// An abort: around the Moon without stopping (Apollo 13), or turned
+	// around short of it.
+	if (fPhase == Phase::TranslunarCoast) {
+		Situation s = Situate(*fCSM);
+		if (s.nearMoon)
+			fMoonVisited = true;
+		else if (fMoonVisited)
+			SetPhase(Phase::TransearthCoast);
+		if (fCSM->position.Length() < world::kREarth + 121920)
+			SetPhase(Phase::Entry);
+	}
 	if (crew.AverageHealth() < 5)
 		Lose("The crew did not survive");
 	if (cmCabin.pressure < 1.0 && fCrewInCM > 0)
-		Lose("Cabin pressure lost");
+		Lose(csmSystems.surgeO2 <= 0 && (csmSystems.TotalO2() < 0.5
+				|| !csmSystems.attached)
+			? fMission.csmCallsign + " ran out of oxygen"
+			: std::string("Cabin pressure lost"));
 	if (lmCabin.pressure < 1.0 && fCrewInLM > 0)
 		Lose("LM cabin pressure lost");
 }

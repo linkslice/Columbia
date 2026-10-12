@@ -35,6 +35,7 @@ struct FlightOptions {
 	uint32_t seed = 0;             // contingency draw (0: random)
 	std::string ropes;             // directory with the flight software
 	flight::DrillId drill = flight::DrillId::None;   // a training drill
+	bool askDecisions = true;      // Flight's calls are yours (else as flown)
 };
 
 class FlightSession {
@@ -68,6 +69,10 @@ public:
 	// A drill being set up: the crew flies, flat out, to the drill's
 	// moment, then hands over (and the warp drops to real time).
 	bool DrillPending() const { return fDrillPending; }
+
+	// Flight's calls: one waiting holds the clock (see MissionDirector).
+	bool DecisionPending();
+	bool Decide(const std::string& id, const std::string& key);
 	bool DrillFailed() const { return fDrillFailed; }
 	const flight::DrillSpec* Drill() const { return fDrill; }
 

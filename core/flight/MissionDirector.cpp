@@ -3,6 +3,8 @@
 
 #include "MissionDirector.h"
 
+#include "../sim/Spacecraft.h"
+
 #include "FlightSim.h"
 #include "Saturn.h"
 
@@ -76,6 +78,21 @@ MissionDirector::MissionDirector(FlightSim& sim, AutoCrew& crew)
 	fSplashLat = sim.Mission().splashLatitude;
 	fSplashLon = sim.Mission().splashLongitude;
 	_Build();
+	if (const char* env = std::getenv("COLUMBIA_CHOICES")) {
+		std::string all = env;
+		size_t at = 0;
+		while (at < all.size()) {
+			size_t comma = all.find(',', at);
+			std::string item = all.substr(at, comma == std::string::npos
+				? std::string::npos : comma - at);
+			size_t eq = item.find('=');
+			if (eq != std::string::npos)
+				presetChoices[item.substr(0, eq)] = item.substr(eq + 1);
+			if (comma == std::string::npos)
+				break;
+			at = comma + 1;
+		}
+	}
 	// Starting partway through the flight: what's long past is done.
 	for (Step& s : fSteps)
 		if (s.get > 0 && s.get < f.GET() - 2 * kH)
@@ -122,6 +139,7 @@ MissionDirector::MissionDirector(FlightSim& sim, AutoCrew& crew)
 		if (in.found)
 			fEI = (in.jd - (f.JulianDate() - f.GET() / 86400)) * 86400;
 	}
+	fBuilt = true;
 }
 
 
@@ -144,7 +162,303 @@ MissionDirector::_Add(const std::string& name, double get,
 	s.get = get;
 	s.run = run;
 	s.when = when;
-	fSteps.push_back(s);
+	// Once the flight is under way, steps may be added while a step runs
+	// (the step list can't grow under the loop): they join next tick.
+	if (fBuilt)
+		fLater.push_back(s);
+	else
+		fSteps.push_back(s);
+}
+
+
+void
+MissionDirector::_AddLater(const std::string& name, double get,
+	std::function<void()> run, std::function<bool()> when)
+{
+	Step s;
+	s.name = name;
+	s.get = get;
+	s.run = run;
+	s.when = when;
+	fLater.push_back(s);
+}
+
+
+// ---------------------------------------------------------------------------
+// Flight's calls
+
+
+const Decision*
+MissionDirector::PendingDecision() const
+{
+	for (const Decision& d : fDecisions)
+		if (d.chosen < 0)
+			return &d;
+	return nullptr;
+}
+
+
+bool
+MissionDirector::Decide(const std::string& id, const std::string& key,
+	const std::string& by)
+{
+	for (size_t i = 0; i < fDecisions.size(); i++) {
+		Decision& d = fDecisions[i];
+		if (d.id != id || d.chosen >= 0)
+			continue;
+		for (size_t k = 0; k < d.options.size(); k++) {
+			if (d.options[k].key != key)
+				continue;
+			d.chosen = int(k);
+			d.chosenBy = by;
+			const DecisionOption& o = d.options[k];
+			f.Log(LogEntry::Event, "FLIGHT: " + d.title + " -- " + o.label
+				+ (o.historical ? " (as flown)" : " (not as flown)"));
+			auto then = fDecisionThen[i];
+			then(key);
+			return true;
+		}
+	}
+	return false;
+}
+
+
+void
+MissionDirector::_Ask(Decision d, std::function<void(const std::string&)> then)
+{
+	d.postedGET = f.GET();
+	fDecisions.push_back(d);
+	fDecisionThen.push_back(then);
+	f.Log(LogEntry::Capcom, "Flight: " + d.title + ". " + d.situation);
+	for (const DecisionOption& o : d.options)
+		f.Log(LogEntry::Info, "  " + o.label + ": " + o.detail);
+	std::string key, by;
+	auto preset = presetChoices.find(d.id);
+	if (preset != presetChoices.end()) {
+		key = preset->second;
+		by = "preset";
+	} else if (!waitForDecisions) {
+		for (const DecisionOption& o : d.options)
+			if (o.historical)
+				key = o.key;
+		if (key.empty())
+			key = d.options.front().key;
+		by = "Flight (as flown)";
+	}
+	if (onDecision)
+		onDecision(fDecisions.back());
+	if (!key.empty())
+		Decide(d.id, key, by);
+}
+
+
+void
+MissionDirector::_CheckEmergencies()
+{
+	// The service module damaged on the way out (Apollo 13): abort.
+	if (!fEmergencyAsked && f.faults.smDamaged && f.HasLM() && f.LMDocked()
+			&& f.CurrentPhase() == Phase::TranslunarCoast) {
+		fEmergencyAsked = true;
+		const LMSystems& lm = f.lmSystems;
+		char lmLine[200];
+		std::snprintf(lmLine, sizeof(lmLine), "%s carries %.0f kg of oxygen, "
+			"%.0f kg of water and %.0f amp-hours: built for two men for two days.",
+			f.Mission().lmCallsign.c_str(), lm.OxygenKg(), lm.WaterKg(),
+			lm.AmpHours());
+		Decision d;
+		d.id = "sm-abort";
+		d.title = "Abort the mission";
+		d.situation = std::string("The service module has lost its oxygen and two "
+			"fuel cells; the CM has its entry batteries and a little surge-tank "
+			"oxygen. There is no landing. ") + lmLine;
+		d.options.push_back({"lifeboat", "Around the Moon in the LM lifeboat",
+			"Power up the LM, move all three crew in, and burn its descent engine "
+			"to get back on a free return around the Moon. Home in about four "
+			"days -- if the LM's water, power and CO2 scrubbers hold out.", true});
+		d.options.push_back({"direct", "Direct abort with the SPS",
+			"Turn around now: jettison the LM (the stack is too heavy for the SPS "
+			"to reverse), a burn of about 5,000 ft/s, home in about two days. "
+			"The SPS sits beside the blown-out panel, and the crew rides home in "
+			"a dead CM with no lifeboat.", false});
+		_Ask(d, [this](const std::string& key) { _SMDamageAbort(key); });
+	}
+	// In the lifeboat: the square-in-round adapter when the LM's CO2 climbs.
+	if (fLifeboat && !f.lioh.squareInRound && f.lmCabin.co2 > 7.0) {
+		f.lioh.squareInRound = true;
+		f.Log(LogEntry::Capcom, f.Mission().lmCallsign + ", Houston. We'd like you"
+			" to build a little adapter for the CM's lithium hydroxide canisters: "
+			"a flight plan cover, a sock, two bags and the gray tape.");
+		f.Log(LogEntry::Crew, "LMP: Mailbox is up and running. CO2's coming down.");
+	}
+}
+
+
+void
+MissionDirector::_EnterLifeboat()
+{
+	fLifeboat = true;
+	if (!f.LGCPowered())
+		f.PowerUpLGC();
+	f.TransferCrew(f.CrewInCM() + f.CrewInLM());
+	// The CM shut down to save its batteries for entry.
+	CSMSystems& cs = f.csmSystems;
+	cs.poweredDown = true;
+	cs.powerTransfer = true;
+	cs.loads.computer = cs.loads.imu = cs.loads.scs = cs.loads.comms = false;
+	cs.loads.heaters = cs.loads.cabinFans = cs.loads.lights = false;
+	cs.loads.glycolPumps = cs.loads.optics = cs.loads.radar = cs.loads.tv = false;
+	f.CMPGNCS().panel.scContCMC = false;
+	f.CMPGNCS().panel.mode = gnc::CMPanel::MODE_FREE;
+	f.CMPGNCS().imu.powered = false;     // the CM platform off for the trip
+	f.Log(LogEntry::Capcom, f.Mission().lmCallsign + ", Houston. Get the LM powered"
+		" up; we want you to power down the CM and move in.");
+	f.Log(LogEntry::Crew, "CDR: Okay, we're in the LM. The CM is powered down.");
+}
+
+
+void
+MissionDirector::_SMDamageAbort(const std::string& choice)
+{
+	fAborted = true;
+	for (Step& st : fSteps)
+		st.done = true;
+	double jd0 = f.JulianDate() - f.GET() / 86400;
+	if (choice == "direct") {
+		// The LM goes; the SPS turns them around.
+		_AddLater("LM jettison for the abort", 0, [this]() {
+			f.TransferCrew(0);
+			f.JettisonLM();
+			f.Log(LogEntry::Crew, "CDR: LM jettison. We're on our own.");
+		});
+		_AddLater("Direct abort", 0, [this, jd0]() {
+			double tig = f.GET() + 1.5 * kH;
+			State at = Propagate(_Now(), tig - f.GET());
+			Vec3 dv;
+			Interface entry;
+			if (!TargetReturn(at, -at.v, -6.5 * kDeg, 0, 2400, &dv, &entry)) {
+				f.Log(LogEntry::Capcom, "Houston: no direct abort solution. "
+					"We'll go around the Moon.");
+				_AddLater("Free return", 0, [this]() {});
+				_AddEarthReturn();
+				return;
+			}
+			fEI = (entry.jd - jd0) * 86400;
+			char buf[160];
+			std::snprintf(buf, sizeof(buf), "RTCC: direct abort %.0f ft/s, entry "
+				"interface at %s", dv.Length() / 0.3048, FormatGET(fEI).c_str());
+			f.Log(LogEntry::Info, buf);
+			_Burn("Direct abort", tig, dv, false);
+			_AddEarthReturn();
+		});
+		return;
+	}
+	_EnterLifeboat();
+	_AddLifeboatHome(true);
+}
+
+
+void
+MissionDirector::_AddLifeboatHome(bool pc2Decision)
+{
+	double jd0 = f.JulianDate() - f.GET() / 86400;
+	// DPS-1: back onto a free return (Apollo 13's at 61:30, 38 ft/s).
+	_AddLater("DPS-1: free return", 0, [this, jd0]() {
+		double tig = f.GET() + 2 * kH;
+		State at = Propagate(_Now(), tig - f.GET());
+		Vec3 dv;
+		Interface entry;
+		if (!TargetReturn(at, at.v, -6.5 * kDeg, 0, 300, &dv, &entry)) {
+			f.Log(LogEntry::Capcom, "Houston: still working the free-return burn.");
+			for (Step& st : fSteps)
+				if (st.name == "DPS-1: free return") {
+					st.done = false;
+					st.get = f.GET() + 1800;
+				}
+			return;
+		}
+		fEI = (entry.jd - jd0) * 86400;
+		State post = at;
+		post.v += dv;
+		Approach ap = ClosestMoonApproach(post, 3 * 86400);
+		fPericynthion = ap.found ? (ap.jd - jd0) * 86400 : tig + 15 * kH;
+		char buf[200];
+		std::snprintf(buf, sizeof(buf), "RTCC: free return %.1f ft/s; pericynthion "
+			"%s at %.0f nmi, entry interface %s", dv.Length() / 0.3048,
+			FormatGET(fPericynthion).c_str(), (ap.radius - world::kRMoon) / 1852,
+			FormatGET(fEI).c_str());
+		f.Log(LogEntry::Info, buf);
+		_Burn("DPS-1", tig, dv, true);
+	}, [this]() { return !fCrew.Busy(); });
+	if (!pc2Decision) {
+		_AddEarthReturn();
+		return;
+	}
+	// Before pericynthion: speed the return up, and where to come down.
+	_AddLater("PC+2 decision", 0, [this, jd0]() {
+		const LMSystems& lm = f.lmSystems;
+		double hoursHome = (fEI - f.GET()) / 3600;
+		char state[240];
+		std::snprintf(state, sizeof(state), "On the free return, entry is in %.0f "
+			"hours, in the Indian Ocean. %s has %.0f hours of water and %.0f of "
+			"power at the present rates.", hoursHome,
+			f.Mission().lmCallsign.c_str(), lm.WaterHours(), lm.PowerHours());
+		Decision d;
+		d.id = "pc2";
+		d.title = "The PC+2 burn";
+		d.situation = state;
+		d.options.push_back({"pacific", "PC+2 to the Pacific",
+			"A DPS burn two hours after pericynthion of about 860 ft/s: about ten "
+			"hours sooner, and the recovery fleet in the mid-Pacific.", true});
+		d.options.push_back({"fast", "Fast return, SM jettisoned",
+			"Jettison the service module first, then a much bigger DPS burn: home "
+			"about a day sooner. The CM's heat shield, sheltered by the SM until "
+			"now, spends days in deep cold.", false});
+		d.options.push_back({"none", "No burn: ride the free return",
+			"Save the DPS for corrections. The longest way home, with the LM's "
+			"consumables right at their limits, and a splash where the fleet "
+			"isn't.", false});
+		_Ask(d, [this, jd0](const std::string& key) {
+			if (key == "none") {
+				_AddEarthReturn();
+				return;
+			}
+			bool fast = key == "fast";
+			const FlightPlan& plan = f.Mission().plan;
+			// Apollo 13's took about ten hours off the free return.
+			double wantEI = fast ? fEI - 28 * kH : fEI - 10 * kH;
+			(void)plan;
+			if (fast)
+				_AddLater("SM jettison for the fast return", 0, [this]() {
+					f.SeparateCMFromSM();
+				}, [this]() { return !fCrew.Busy() && f.GET() > fPericynthion; });
+			_AddLater("PC+2", 0, [this, jd0, wantEI, fast]() {
+				double tig = fPericynthion + 2 * kH;
+				State at = Propagate(_Now(), tig - f.GET());
+				Vec3 vm = at.v - MoonVel(at.jd);
+				Vec3 dv;
+				Interface entry;
+				// The fast return: as early as the DPS can make it.
+				bool ok = false;
+				for (double back = 0; back <= (fast ? 18 : 0) * kH && !ok; back += 3 * kH)
+					ok = TargetReturn(at, vm, -6.5 * kDeg, jd0 + (wantEI + back) / 86400,
+						fast ? 1500 : 500, &dv, &entry);
+				if (!ok) {
+					f.Log(LogEntry::Capcom, "Houston: the RTCC can't make that return; "
+						"you'll stay on the free return.");
+					_AddEarthReturn();
+					return;
+				}
+				fEI = (entry.jd - jd0) * 86400;
+				char buf[160];
+				std::snprintf(buf, sizeof(buf), "RTCC: PC+2 %.0f ft/s, entry "
+					"interface %s", dv.Length() / 0.3048, FormatGET(fEI).c_str());
+				f.Log(LogEntry::Info, buf);
+				_Burn("PC+2", tig, dv, true);
+				_AddEarthReturn();
+			}, [this]() { return !fCrew.Busy() && f.GET() > fPericynthion - 30 * 60; });
+		});
+	}, [this]() { return fPericynthion > 0 && !fCrew.Busy()
+		&& f.GET() > fPericynthion - 4 * kH; });
 }
 
 
@@ -198,19 +512,24 @@ MissionDirector::_Burn(const std::string& purpose, double impulseGET,
 	}
 	ManeuverPAD pad;
 	pad.purpose = purpose;
-	pad.engine = "SPS";
+	// In the lifeboat the LM's descent engine pushes the docked stack.
+	bool dps = fLifeboat && f.LMDocked();
+	pad.engine = dps ? "DPS" : "SPS";
 	pad.dvMagnitude = dv.Length();
-	AutoCrew::ExternalDeltaV(f, impulseGET, dv, &pad.tig, &pad.dvLVLH, kSPSThrust,
-		kSPSIsp);
-	double m = f.CSMVehicle().Mass(), ve = kSPSIsp * 9.80665;
-	pad.burnTime = m * ve / kSPSThrust * (1 - std::exp(-dv.Length() / ve));
+	double thrust = dps ? 0.4 * sim::craft::kDPSFullThrust : kSPSThrust;
+	double isp = dps ? 305 : kSPSIsp;
+	AutoCrew::ExternalDeltaV(f, impulseGET, dv, &pad.tig, &pad.dvLVLH, thrust, isp);
+	double m = f.CSMVehicle().Mass(), ve = isp * 9.80665;
+	pad.burnTime = m * ve / thrust * (1 - std::exp(-dv.Length() / ve));
 	(void)docked;
 	fPADs.push_back(pad);
-	f.Log(LogEntry::Capcom, f.Mission().csmCallsign + ", Houston. " + pad.Text());
+	f.Log(LogEntry::Capcom, (dps ? f.Mission().lmCallsign : f.Mission().csmCallsign)
+		+ ", Houston. " + pad.Text());
 	if (onPAD)
 		onPAD(pad);
 	if (autopilot)
-		fCrew.Add(AutoCrew::CSMBurn(pad.tig, pad.dvLVLH, purpose));
+		fCrew.Add(dps ? AutoCrew::DockedDPSBurn(pad.tig, pad.dvLVLH, purpose)
+			: AutoCrew::CSMBurn(pad.tig, pad.dvLVLH, purpose));
 }
 
 
@@ -614,6 +933,14 @@ MissionDirector::_AddReturn()
 	}, [this]() {
 		return !fCrew.Busy() && !f.LMDocked() && f.CurrentPhase() == Phase::LunarOrbit;
 	});
+	_AddEarthReturn();
+	(void)p;
+}
+
+
+void
+MissionDirector::_AddEarthReturn()
+{
 	auto mccEarth = [this](const std::string& name, double minDV) {
 		return [this, name, minDV]() {
 			State at = Propagate(_Now(), kH);
@@ -635,6 +962,40 @@ MissionDirector::_AddReturn()
 	_Add("MCC-7", 0, mccEarth("MCC-7", 0.3), [this]() {
 		return fEI > 0 && !fCrew.Busy() && f.GET() > fEI - 5 * kH;
 	});
+	if (fLifeboat) {
+		// Apollo 13's last day: the SM goes (the crew photographed the
+		// damage), the crew moves back to the powered-up CM, Aquarius goes.
+		_Add("SM jettison", 0, [this]() {
+			if (f.SMAttached()) {
+				f.SeparateCMFromSM();
+				f.Log(LogEntry::Crew, "CDR: And there's one whole side of that"
+					" spacecraft missing.");
+			}
+		}, [this]() { return fEI > 0 && !fCrew.Busy() && f.GET() > fEI - 4.6 * kH; });
+		_Add("Crew to the CM", 0, [this]() {
+			f.TransferCrew(0);
+			CSMSystems& cs = f.csmSystems;
+			cs.poweredDown = false;
+			cs.powerTransfer = false;
+			cs.loads = PowerLoads();
+			f.CMPGNCS().imu.powered = true;   // aligned in the entry procedure
+			cs.batteryA.online = cs.batteryB.online = cs.batteryC.online = true;
+			f.CMPGNCS().panel.scContCMC = true;
+			f.CMPGNCS().panel.mode = gnc::CMPanel::MODE_AUTO;
+			char bat[160];
+			std::snprintf(bat, sizeof(bat), "%s, Houston. Power up the CM; the entry "
+				"checklist is on the way. Batteries A, B, C: %.0f, %.0f, %.0f amp-hours.",
+				f.Mission().csmCallsign.c_str(), cs.batteryA.charge, cs.batteryB.charge,
+				cs.batteryC.charge);
+			f.Log(LogEntry::Capcom, bat);
+		}, [this]() { return fEI > 0 && f.GET() > fEI - 3 * kH; });
+		_Add("LM jettison", 0, [this]() {
+			f.JettisonLM();
+			f.Log(LogEntry::Capcom, "Farewell, " + f.Mission().lmCallsign
+				+ ", and we thank you.");
+		}, [this]() { return fEI > 0 && f.GET() > fEI - 2.5 * kH; });
+	}
+	const MissionSpec& m = f.Mission();
 	_Add("Entry", 0, [this, &m]() {
 		// The recovery forces sit on the predicted ground track, the
 		// entry range downrange of the entry interface (they moved for
@@ -678,9 +1039,7 @@ MissionDirector::_AddReturn()
 		if (autopilot)
 			fCrew.Add(AutoCrew::Entry(fSplashLat, fSplashLon));
 	}, [this]() { return fEI > 0 && !fCrew.Busy() && f.GET() > fEI - 2 * kH; });
-	(void)p;
 }
-
 
 std::string
 MissionDirector::NextEvent() const
@@ -705,6 +1064,15 @@ MissionDirector::NextEventGET() const
 void
 MissionDirector::Tick()
 {
+	for (Step& st : fLater)
+		fSteps.push_back(st);
+	fLater.clear();
+	_CheckEmergencies();
+	for (Step& st : fLater)
+		fSteps.push_back(st);
+	fLater.clear();
+	if (PendingDecision())
+		return;             // Flight hasn't called it yet
 	for (Step& s : fSteps) {
 		if (s.done)
 			continue;

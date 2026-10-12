@@ -91,6 +91,13 @@ bool TargetTEI(const State& orbit, double gamma, Vec3* deltaV, double* eiJD,
 // entry angle.
 bool TargetMCCMoon(const State& s, double pericynthionAlt, Vec3* deltaV);
 bool TargetMCCEarth(const State& s, double gamma, Vec3* deltaV);
+// An abort or a return-speeding burn: the impulsive delta-V at s.jd that
+// reaches entry interface at `gamma`, at `wantEIJD` if given (else the
+// nearest return the burn can make). `along` is the burn's main
+// direction (prograde or retrograde to the vehicle's path relative to the
+// body it is leaving); the search stays within `maxDV` m/s.
+bool TargetReturn(const State& s, const Vec3& along, double gamma,
+	double wantEIJD, double maxDV, Vec3* deltaV, Interface* entry = nullptr);
 // Midcourse correction to arrive at the Moon in a given orbital plane
 // (unit angular-momentum vector, Moon-relative) at the given
 // pericynthion: the plane the LOI burn and the landing site need. With

@@ -27,6 +27,7 @@
 #include <ctime>
 #include <mutex>
 
+#include "DecisionWindow.h"
 #include "MapView.h"
 #include "PanelView.h"
 #include "WindowView.h"
@@ -177,7 +178,28 @@ FlightWindow::FlightWindow(const FlightOptions& options)
 FlightWindow::~FlightWindow()
 {
 	delete fRunner;
+	if (fDecisionWindow && fDecisionWindow->Lock())
+		fDecisionWindow->Quit();
 	fSession.Stop();
+}
+
+
+void
+FlightWindow::_CheckDecision()
+{
+	// Flight's call: put it up (once), with the clock stopped.
+	flight::Decision decision;
+	{
+		std::lock_guard<std::recursive_mutex> g(fSession.Lock());
+		const flight::Decision* d = fSession.Director().PendingDecision();
+		if (!d || d->id == fDecisionId)
+			return;
+		decision = *d;
+	}
+	fDecisionId = decision.id;
+	fDecisionWindow = new DecisionWindow(decision, BMessenger(this), true);
+	fDecisionWindow->CenterIn(Frame());
+	fDecisionWindow->Show();
 }
 
 
@@ -261,6 +283,16 @@ FlightWindow::MessageReceived(BMessage* message)
 		case kMsgPulse:
 			_Pulse();
 			break;
+		case kMsgDecided: {
+			const char* id = nullptr;
+			const char* key = nullptr;
+			if (message->FindString("id", &id) == B_OK
+					&& message->FindString("key", &key) == B_OK)
+				fSession.Decide(id, key);
+			fDecisionWindow = nullptr;
+			fDecisionId.clear();
+			break;
+		}
 		case kMsgCard: {
 			int32 card;
 			if (message->FindInt32("card", &card) == B_OK)
@@ -497,6 +529,7 @@ FlightWindow::_Pulse()
 	if (!fStarted)
 		return;
 	_ApplyControllers();
+	_CheckDecision();
 	switch (fCard) {
 		case 0: fPanel->Refresh(); break;
 		case 1: fWindow->Refresh(); break;

@@ -26,6 +26,7 @@ class BTextView;
 
 namespace columbia {
 
+class DecisionWindow;
 class MapView;
 class PanelView;
 class WindowView;
@@ -52,6 +53,7 @@ private:
 	void _SetWarpFromSlider();
 	void _FlightOver();
 	void _SaveRecording(bool quiet);
+	void _CheckDecision();
 
 	FlightSession fSession;
 	bool fStarted = false;
@@ -85,6 +87,8 @@ private:
 	bool fProceedHeld = false;
 	bool fOverShown = false;
 	bool fRecordingSaved = false;
+	DecisionWindow* fDecisionWindow = nullptr;
+	std::string fDecisionId;
 };
 
 }  // namespace columbia

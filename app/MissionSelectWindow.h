@@ -46,6 +46,7 @@ private:
 	BStringView* fDifficultyBlurb;
 	BCheckBox* fWatch;
 	BCheckBox* fRealTime;
+	BCheckBox* fDecide;
 	BPopUpMenu* fSites;
 	BMenuField* fSiteField;
 	BTextControl* fDate;

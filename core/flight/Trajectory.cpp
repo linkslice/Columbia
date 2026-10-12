@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <vector>
 
 namespace flight {
 
@@ -751,6 +752,154 @@ TargetMCCEarth(const State& s, double gamma, Vec3* deltaV)
 	return true;
 }
 
+
+bool
+TargetReturn(const State& s, const Vec3& along0, double gamma, double wantEIJD,
+	double maxDV, Vec3* deltaV, Interface* entry)
+{
+	// Closest approach to the Earth within six days (the vacuum perigee a
+	// 40 km perigee is entry at about -6.5 degrees), and when.
+	// Inside 100,000 km the Earth's two-body conic gives the perigee
+	// smoothly (even one below the surface, so the solver can climb out
+	// of an impact); the time is the sampled closest approach.
+	auto approach = [&](const State& st, double* jdOut) {
+		double best = 1e30, bestJD = st.jd, conicRP = -1;
+		Propagate(st, 6 * kDay, [&](const State&, const State& b) {
+			double rb = b.r.Length();
+			if (rb < best) {
+				best = rb;
+				bestJD = b.jd;
+			}
+			if (conicRP < 0 && rb < 1.0e8)
+				conicRP = ConicOf(b.r, b.v, world::kMuEarth).rp;
+			return rb < world::kREarth + 20000;
+		});
+		if (jdOut)
+			*jdOut = bestJD;
+		return conicRP > 0 ? conicRP : best;
+	};
+	const double target = world::kREarth + 40000;
+	Vec3 a = along0.Unit();
+	Vec3 n = s.r.Cross(a).Unit();
+	Vec3 r = a.Cross(n).Unit();
+	// Coarse: directions around the main one, magnitudes up to maxDV.
+	std::vector<Vec3> dirs;
+	for (int i = -2; i <= 2; i++)
+		for (int k = -2; k <= 2; k++) {
+			Vec3 d = a + n * (0.5 * i) + r * (0.5 * k);
+			dirs.push_back(d.Unit());
+		}
+	struct Candidate {
+		double score;
+		Vec3 dir;
+		double m;
+	};
+	std::vector<Candidate> cands;
+	int steps = 24;
+	for (const Vec3& d : dirs)
+		for (int k = 0; k <= steps; k++) {
+			double m = maxDV * k / steps;
+			State st = s;
+			st.v += d * m;
+			double jd;
+			double rp = approach(st, &jd);
+			// Perigee error (km); among returns that come within 2,000 km
+			// of it, the cheapest burn wins.
+			double err = std::fabs(rp - target) / 1000;
+			double score = err < 2000 ? m * 0.01 : 1000 + err;
+			if (wantEIJD > 0)
+				score += std::fabs(jd - wantEIJD) * 24 * 200;   // 200 km an hour
+			cands.push_back({score, d, m});
+		}
+	std::sort(cands.begin(), cands.end(),
+		[](const Candidate& p, const Candidate& q) { return p.score < q.score; });
+	bool diag = std::getenv("RETDIAG") != nullptr;
+	Vec3 u, w1, w2;
+	double bestM = 0;
+	double x[3] = {0, 0, 0};
+	bool ok = false;
+	for (size_t c = 0; c < cands.size() && c < 8 && !ok; c++) {
+		if (cands[c].score > 1e5)
+			break;
+		u = cands[c].dir;
+		bestM = cands[c].m;
+		w1 = u.Cross(s.r).Unit();
+		w2 = w1.Cross(u).Unit();
+		auto burnAt = [&](const double* p) {
+			return u * (bestM + p[0]) + w1 * p[1] + w2 * p[2];
+		};
+		x[0] = x[1] = x[2] = 0;
+		if (wantEIJD > 0) {
+			double y[2] = {0, 0};
+			const double step[2] = {0.5, 0.5}, tol[2] = {0.02, 0.01};
+			ok = Newton<2>([&](const double* p, double* out) {
+				double q[3] = {p[0], 0, p[1]};
+				State st = s;
+				st.v += burnAt(q);
+				double jd;
+				double rp = approach(st, &jd);
+				out[0] = (rp - target) / 1e6;
+				out[1] = (jd - wantEIJD) * 24 / 10;
+				return true;
+			}, y, step, tol, 40);
+			x[0] = y[0];
+			x[2] = y[1];
+		} else {
+			double y[1] = {0};
+			const double step[1] = {0.5}, tol[1] = {0.02};
+			ok = Newton<1>([&](const double* p, double* out) {
+				double q[3] = {p[0], 0, 0};
+				State st = s;
+				st.v += burnAt(q);
+				out[0] = (approach(st, nullptr) - target) / 1e6;
+				return true;
+			}, y, step, tol, 40);
+			x[0] = y[0];
+		}
+		if (diag)
+			std::fprintf(stderr, "RETDIAG candidate %zu score %.1f m %.0f: newton %d"
+				" x %.2f %.2f\n", c, cands[c].score, bestM, ok, x[0], x[2]);
+	}
+	auto burnOf = [&](const double* p) {
+		return u * (bestM + p[0]) + w1 * p[1] + w2 * p[2];
+	};
+	if (!ok)
+		return false;
+	Vec3 dv = burnOf(x);
+	if (dv.Length() > maxDV * 1.2)
+		return false;
+	State st = s;
+	st.v += dv;
+	Interface in = EntryInterface(st, 6 * kDay);
+	if (!in.found)
+		return false;
+	// Trim the entry angle (the sampled perigee is only close) along the
+	// burn's second axis.
+	if (std::fabs(in.gamma - gamma) > 0.05 * kDeg) {
+		double y[1] = {0};
+		const double step[1] = {0.05}, tol[1] = {0.0005};
+		Vec3 base = dv;
+		bool trimmed = Newton<1>([&](const double* p, double* out) {
+			State t = s;
+			t.v += base + w2 * p[0];
+			Interface i2 = EntryInterface(t, 6 * kDay);
+			if (!i2.found)
+				return false;
+			out[0] = i2.gamma - gamma;
+			return true;
+		}, y, step, tol, 30);
+		if (trimmed) {
+			dv = base + w2 * y[0];
+			st = s;
+			st.v += dv;
+			in = EntryInterface(st, 6 * kDay);
+		}
+	}
+	*deltaV = dv;
+	if (entry)
+		*entry = in;
+	return in.found;
+}
 
 namespace {
 

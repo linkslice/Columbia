@@ -22,6 +22,13 @@ APP_SRCS := $(wildcard app/*.cpp) $(wildcard ui/*.cpp)
 OBJDIR := objects
 CORE_OBJS := $(CORE_SRCS:%.cpp=$(OBJDIR)/%.o)
 APP_OBJS  := $(APP_SRCS:%.cpp=$(OBJDIR)/%.o)
+# The simulation the app runs on (defined before any rule that lists it:
+# make expands a rule's prerequisites as it reads the rule).
+GNC_SRCS := core/agc/AGC.cpp core/agc/DSKY.cpp $(wildcard core/gnc/*.cpp) \
+	core/sim/World.cpp core/sim/Vehicle.cpp core/sim/Spacecraft.cpp \
+	core/sim/Aero.cpp core/sim/MoonScene.cpp
+FLIGHT_SRCS := $(GNC_SRCS) $(wildcard core/flight/*.cpp)
+FLIGHT_OBJS := $(FLIGHT_SRCS:%.cpp=$(OBJDIR)/%.o)
 APP_CORE_SRCS = $(FLIGHT_SRCS)
 APP_CORE_OBJS = $(APP_CORE_SRCS:%.cpp=$(OBJDIR)/%.o)
 LIBS      := -lbe -ltracker -ldevice
@@ -78,9 +85,6 @@ test: $(TESTDIR)/mission_test $(TESTDIR)/controller_test $(TESTDIR)/agc_boot $(T
 # --- Flight tests: the real flight software flies real mission phases -------
 # (each takes a minute or more; they need the rope/ directory)
 
-GNC_SRCS := core/agc/AGC.cpp core/agc/DSKY.cpp $(wildcard core/gnc/*.cpp) \
-	core/sim/World.cpp core/sim/Vehicle.cpp core/sim/Spacecraft.cpp \
-	core/sim/Aero.cpp core/sim/MoonScene.cpp
 
 $(TESTDIR)/lm_landing: tests/lm_landing_test.cpp $(GNC_SRCS)
 	@mkdir -p $(TESTDIR)
@@ -109,8 +113,6 @@ flighttest: $(TESTDIR)/lm_landing $(TESTDIR)/csm_burn $(TESTDIR)/cm_entry $(TEST
 clean:
 	rm -rf $(OBJDIR) $(NAME)
 
-FLIGHT_SRCS := $(GNC_SRCS) $(wildcard core/flight/*.cpp)
-FLIGHT_OBJS := $(FLIGHT_SRCS:%.cpp=$(OBJDIR)/%.o)
 
 FLIGHT_TESTS := flight_test rtcc_test launch_test contingency_test \
 	autocrew_test mission_test_full recording_test

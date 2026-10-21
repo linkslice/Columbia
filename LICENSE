@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----------------------------------------------------------------------------
-
-The rope images in rope/ and the data in core/agc/Comanche055Rope.cpp are
-the Apollo Guidance Computer flight programs Comanche 055 (Colossus 2A) and
-Luminary 099 (Luminary 1A), written by the MIT Instrumentation Laboratory
-for NASA. They are in the public domain. See rope/PROVENANCE.md.

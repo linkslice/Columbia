@@ -10,13 +10,13 @@ It includes training drills (transposition and docking, LOI, the last 500 \
 feet, rendezvous, TPI, docking), difficulty levels with failures, Flight \
 Director decisions with real consequences (take Apollo 13 home on a direct \
 abort, or skip PC+2), and a screensaver that replays recorded flights."
-HOMEPAGE="https://github.com/linkslice/columbia"
+HOMEPAGE="https://github.com/linkslice/Columbia"
 COPYRIGHT="2026 Bryan Irvine"
 LICENSE="MIT"
 REVISION="1"
-SOURCE_URI="https://github.com/linkslice/columbia/archive/refs/tags/v$portVersion.tar.gz"
+SOURCE_URI="https://github.com/linkslice/Columbia/archive/refs/tags/v$portVersion.tar.gz"
 CHECKSUM_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
-SOURCE_DIR="columbia-$portVersion"
+SOURCE_DIR="Columbia-$portVersion"
 
 ARCHITECTURES="all !x86_gcc2"
 SECONDARY_ARCHITECTURES="x86"

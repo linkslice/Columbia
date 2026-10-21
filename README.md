@@ -77,8 +77,8 @@ You need Haiku's development tools (`pkgman install haiku_devel` if they
 aren't there; `gcc` and `make` come with them).
 
 ```sh
-git clone https://github.com/linkslice/columbia.git
-cd columbia
+git clone https://github.com/linkslice/Columbia.git
+cd Columbia
 make -j4                # the app: ./Columbia
 make -j4 saver          # the screensaver add-on
 ```
@@ -248,4 +248,6 @@ Reports and fixes are welcome.
 
 ## License
 
-MIT; see `LICENSE`. The flight software in `rope/` is public domain.
+MIT; see `LICENSE`. The flight software in `rope/` is public domain;
+`NOTICE.md` lists everything in the tree that came from elsewhere and where
+it came from.

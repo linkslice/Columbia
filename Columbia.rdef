@@ -11,5 +11,5 @@ resource app_version {
 	variety = B_APPV_DEVELOPMENT,
 	internal = 0,
 	short_info = "Columbia",
-	long_info = "Columbia — Apollo flight simulator, Comanche 055 on an emulated AGC"
+	long_info = "Columbia — Apollo flight simulator running the real AGC flight software. MIT License."
 };

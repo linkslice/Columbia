@@ -1,0 +1,67 @@
+SUMMARY="An Apollo flight simulator running the real guidance computer software"
+DESCRIPTION="Columbia flies the Apollo missions, 7 through 17, with the \
+Apollo Guidance Computer emulated and running the flight software that \
+flew: Colossus, Comanche and Artemis in the Command Module, Sundance and \
+Luminary in the Lunar Module. You fly from the panels and the DSKY, out the \
+window, or on the map, with time warp, the keyboard, mouse or a joystick. \
+The automatic crew can fly any part of a mission for you.
+
+It includes training drills (transposition and docking, LOI, the last 500 \
+feet, rendezvous, TPI, docking), difficulty levels with failures, Flight \
+Director decisions with real consequences (take Apollo 13 home on a direct \
+abort, or skip PC+2), and a screensaver that replays recorded flights."
+HOMEPAGE="https://github.com/linkslice/columbia"
+COPYRIGHT="2026 Bryan Irvine"
+LICENSE="MIT"
+REVISION="1"
+SOURCE_URI="https://github.com/linkslice/columbia/archive/refs/tags/v$portVersion.tar.gz"
+CHECKSUM_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
+SOURCE_DIR="columbia-$portVersion"
+
+ARCHITECTURES="all !x86_gcc2"
+SECONDARY_ARCHITECTURES="x86"
+
+PROVIDES="
+	columbia$secondaryArchSuffix = $portVersion
+	app:Columbia = $portVersion
+	"
+REQUIRES="
+	haiku$secondaryArchSuffix
+	"
+
+BUILD_REQUIRES="
+	haiku${secondaryArchSuffix}_devel
+	"
+BUILD_PREREQUIRES="
+	cmd:gcc$secondaryArchSuffix
+	cmd:make
+	"
+
+# Flying Apollo 11 headless to record it for the screensaver takes several
+# minutes (longer on ARM). Set to "" to skip; the screensaver then shows only
+# flights the user records.
+RECORD_MISSIONS="11"
+
+BUILD()
+{
+	make $jobArgs
+	make $jobArgs saver
+	if [ -n "$RECORD_MISSIONS" ]; then
+		make $jobArgs recordings MISSIONS_TO_RECORD="$RECORD_MISSIONS"
+	fi
+}
+
+INSTALL()
+{
+	make install \
+		APPS_DIR="$appsDir" \
+		DATA_DIR="$dataDir" \
+		ADDONS_DIR="$addOnsDir"
+
+	addAppDeskbarSymlink $appsDir/Columbia
+}
+
+TEST()
+{
+	make test
+}

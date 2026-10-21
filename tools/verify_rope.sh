@@ -1,9 +1,10 @@
 #!/bin/sh
 # Columbia — rebuild and verify the rope images from the Virtual AGC sources.
 #
-# Assembles Comanche 055 and Luminary 099 with yaYUL and checks that:
+# Assembles every program in rope/ with yaYUL and checks that:
 #   1. each assembles with no errors,
 #   2. each matches the independent octal transcription of the flight rope,
+#      where Virtual AGC has one,
 #   3. each matches the image shipped in rope/.
 # It also builds the AGC self-test rope (Validation) used by `make test`.
 #
@@ -15,11 +16,12 @@
 set -e
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=${1:-$here/objects/virtualagc}
+PROGRAMS=$(cd "$here/rope" && ls *.bin | sed 's/\.bin$//')
 
 if [ ! -d "$work/.git" ]; then
 	git clone --depth 1 --filter=blob:none --sparse \
 		https://github.com/virtualagc/virtualagc.git "$work"
-	(cd "$work" && git sparse-checkout set Comanche055 Luminary099 \
+	(cd "$work" && git sparse-checkout set $PROGRAMS \
 		Validation yaYUL Tools)
 fi
 cd "$work"
@@ -29,15 +31,19 @@ cc -O2 -w -DNVER='"columbia"' -o yaYUL/yaYUL yaYUL/*.c -lm
 cc -O2 -w -DNVER='"columbia"' -o Tools/oct2bin Tools/oct2bin.c Tools/utils.c
 
 status=0
-for program in Comanche055 Luminary099; do
+for program in $PROGRAMS; do
 	(cd $program && ../yaYUL/yaYUL MAIN.agc > assemble.log 2>&1) || true
 	errors=$(grep -E '^Fatal errors:' $program/assemble.log | awk '{print $3}')
-	(cd $program && ../Tools/oct2bin < $program.binsource > /dev/null \
-		&& mv oct2bin.bin octal.bin)
-	if cmp -s $program/MAIN.agc.bin $program/octal.bin; then
-		octal="matches octal rope"
+	if [ -f $program/$program.binsource ]; then
+		(cd $program && ../Tools/oct2bin < $program.binsource > /dev/null \
+			&& mv oct2bin.bin octal.bin)
+		if cmp -s $program/MAIN.agc.bin $program/octal.bin; then
+			octal="matches octal rope"
+		else
+			octal="DIFFERS from octal rope"; status=1
+		fi
 	else
-		octal="DIFFERS from octal rope"; status=1
+		octal="no octal listing"
 	fi
 	if cmp -s $program/MAIN.agc.bin "$here/rope/$program.bin"; then
 		shipped="matches rope/$program.bin"

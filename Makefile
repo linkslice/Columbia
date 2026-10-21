@@ -2,7 +2,11 @@
 # Copyright (c) 2026 Bryan Irvine. MIT License (see LICENSE).
 #
 #   make            build the Haiku application (on Haiku)
+#   make saver      build the screensaver add-on (on Haiku)
+#   make install    install the app, ropes, screensaver and any recordings
+#   make recordings fly missions headless and record them for the screensaver
 #   make test       build and run the headless tests (any POSIX host)
+#   make flighttest the flight regression (any POSIX host; slow)
 
 NAME     := Columbia
 CXX      ?= g++
@@ -33,7 +37,7 @@ APP_CORE_SRCS = $(FLIGHT_SRCS)
 APP_CORE_OBJS = $(APP_CORE_SRCS:%.cpp=$(OBJDIR)/%.o)
 LIBS      := -lbe -ltracker -ldevice
 
-.PHONY: all test preview clean saver install-saver
+.PHONY: all test preview clean saver
 
 all: $(NAME)
 
@@ -164,8 +168,8 @@ $(OBJDIR)/preview/replay: tests/preview/replay_preview.cpp tests/preview/HaikuSh
 
 # --- The screensaver (Haiku) --------------------------------------------------
 # A Screen Saver add-on that replays flight recordings. `make saver` builds
-# it; `make install-saver` installs it with the recordings for the ScreenSaver
-# preferences to find.
+# it; `make install` (or `make install-saver install-recordings`) puts it and
+# the recordings where the ScreenSaver preferences find them.
 
 SAVER_SRCS := screensaver/ColumbiaSaver.cpp $(REPLAY_SRCS)
 
@@ -176,13 +180,56 @@ $(OBJDIR)/saver/Columbia: $(SAVER_SRCS)
 	$(CXX) $(CXXFLAGS) -Iui -fPIC -shared -o $@ $^ -lbe -lscreensaver
 	@if command -v mimeset >/dev/null 2>&1; then mimeset -f $@; fi
 
-SAVER_DIR := $(shell finddir B_USER_NONPACKAGED_ADDONS_DIRECTORY 2>/dev/null)/Screen Savers
-DATA_DIR := $(shell finddir B_USER_NONPACKAGED_DATA_DIRECTORY 2>/dev/null)/Columbia
+# --- Installing ---------------------------------------------------------------
+#
+#   make install          into ~/config/non-packaged (the user's own copy)
+#   make install DESTDIR=... APPS_DIR=... DATA_DIR=... ADDONS_DIR=...
+#                         anywhere else (the HaikuPorter recipe uses this)
+#
+# The app finds its ropes in <data>/Columbia/rope and the flight recordings in
+# <data>/Columbia/recordings, looking in the user's and the system's data
+# directories, packaged or not; the screensaver looks in the same places.
+
+NONPACKAGED := $(shell finddir B_USER_NONPACKAGED_DIRECTORY 2>/dev/null)
+ifeq ($(NONPACKAGED),)
+NONPACKAGED := /boot/home/config/non-packaged
+endif
+APPS_DIR   ?= $(NONPACKAGED)/apps
+DATA_DIR   ?= $(NONPACKAGED)/data
+ADDONS_DIR ?= $(NONPACKAGED)/add-ons
+
+INSTALL_APP   = $(DESTDIR)$(APPS_DIR)
+INSTALL_DATA  = $(DESTDIR)$(DATA_DIR)/Columbia
+INSTALL_SAVER = $(DESTDIR)$(ADDONS_DIR)/Screen Savers
+
+.PHONY: install install-app install-ropes install-saver install-recordings
+
+install: install-app install-ropes install-saver install-recordings
+
+install-app: $(NAME)
+	mkdir -p "$(INSTALL_APP)"
+	cp $(NAME) "$(INSTALL_APP)/$(NAME)"
+	@if command -v mimeset >/dev/null 2>&1; then mimeset -f "$(INSTALL_APP)/$(NAME)"; fi
+
+install-ropes:
+	mkdir -p "$(INSTALL_DATA)/rope/sym"
+	cp rope/*.bin rope/PROVENANCE.md "$(INSTALL_DATA)/rope/"
+	cp rope/sym/*.sym "$(INSTALL_DATA)/rope/sym/"
 
 install-saver: saver
-	mkdir -p "$(SAVER_DIR)" "$(DATA_DIR)/recordings"
-	cp $(OBJDIR)/saver/Columbia "$(SAVER_DIR)/Columbia"
-	-cp $(RECORDINGS)/*.colrec "$(DATA_DIR)/recordings/"
+	mkdir -p "$(INSTALL_SAVER)"
+	cp $(OBJDIR)/saver/Columbia "$(INSTALL_SAVER)/Columbia"
+	@if command -v mimeset >/dev/null 2>&1; then mimeset -f "$(INSTALL_SAVER)/Columbia"; fi
+
+# Whatever `make recordings` (or flying with recording on) has left here.
+install-recordings:
+	@if ls $(RECORDINGS)/*.colrec >/dev/null 2>&1; then \
+		mkdir -p "$(INSTALL_DATA)/recordings" && \
+		cp $(RECORDINGS)/*.colrec "$(INSTALL_DATA)/recordings/" && \
+		echo "installed $$(ls $(RECORDINGS)/*.colrec | wc -l) recording(s)"; \
+	else \
+		echo "no recordings to install (make recordings makes some)"; \
+	fi
 
 $(OBJDIR)/preview/panel: tests/preview/panel_preview.cpp tests/preview/HaikuShim.cpp app/PanelView.cpp app/WindowView.cpp app/FlightSession.cpp ui/DSKYPainter.cpp ui/Drawing.cpp ui/Coastline.cpp $(FLIGHT_SRCS)
 	@mkdir -p $(OBJDIR)/preview

@@ -231,6 +231,11 @@ install-recordings:
 		echo "no recordings to install (make recordings makes some)"; \
 	fi
 
+$(OBJDIR)/preview/map: tests/preview/map_preview.cpp tests/preview/HaikuShim.cpp app/MapView.cpp app/FlightSession.cpp $(REPLAY_SRCS) $(filter-out core/flight/Recording.cpp core/sim/World.cpp,$(FLIGHT_SRCS))
+	@mkdir -p $(OBJDIR)/preview
+	$(CXX) $(CXXFLAGS) -Wno-deprecated-copy -Wno-multichar -Itests/preview/shim -Iui -Icore -Iapp \
+		$$(pkg-config --cflags cairo) -o $@ $^ $$(pkg-config --libs cairo)
+
 $(OBJDIR)/preview/panel: tests/preview/panel_preview.cpp tests/preview/HaikuShim.cpp app/PanelView.cpp app/WindowView.cpp app/FlightSession.cpp ui/DSKYPainter.cpp ui/Drawing.cpp ui/Coastline.cpp $(FLIGHT_SRCS)
 	@mkdir -p $(OBJDIR)/preview
 	$(CXX) $(CXXFLAGS) -Wno-deprecated-copy -Wno-multichar -Itests/preview/shim -Iui -Icore -Iapp \

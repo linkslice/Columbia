@@ -17,6 +17,14 @@ home too steep and the heat shield doesn't save you.
 
 Runs on x86_64 and ARM64 (including the Raspberry Pi). MIT licensed.
 
+![Apollo 11's map view during translunar coast: the trajectory from TLI out
+past the second midcourse correction toward the Moon, with the CMC's DSKY
+in P40](docs/map-translunar.png)
+
+*Apollo 11, 38 hours in: the map view in the Earth-Moon rotating frame, from
+TLI past MCC-2, with the Command Module computer's DSKY alongside.
+Rendered with `make objects/preview/map`.*
+
 ## What's in it
 
 - **Missions 7 through 17**, each with its own flight software, pad loads,
@@ -194,9 +202,9 @@ make objects/tests/drill_test objects/tests/decision_test \
 [--difficulty nominal|asflown|challenging|hard|nightmare] [--seed N]
 [--quiet]` flies a mission headless and records it.
 
-With cairo installed, `make objects/preview/replay` and
-`make objects/preview/panel` render the screensaver and the instrument
-panel to PNGs off Haiku, through a small shim of the Interface Kit.
+With cairo installed, `make objects/preview/replay`,
+`make objects/preview/panel` and `make objects/preview/map` render the
+screensaver, the instrument panels and the map view to PNGs off Haiku, through a small shim of the Interface Kit.
 
 `tools/haiku_syntax_check.sh` checks the Haiku-only sources against Haiku's
 headers without a Haiku machine. `tools/verify_rope.sh` rebuilds every rope
@@ -237,14 +245,39 @@ Reports and fixes are welcome.
 
 ## Credits
 
-- The Apollo flight software: MIT Instrumentation Laboratory, public domain;
-  transcribed, reconstructed and assembled by the
-  [Virtual AGC](https://github.com/virtualagc/virtualagc) project. See
-  `rope/PROVENANCE.md`.
-- Mission pad loads from the [NASSP](https://github.com/orbiternassp/NASSP)
-  project's scenarios, which reconstruct them from NASA documents.
-- Coastlines from [Natural Earth](https://www.naturalearthdata.com), public
+Columbia stands on a great deal of other people's work.
+
+- **The Apollo flight software** was written by the
+  MIT Instrumentation Laboratory (now
+  [Draper](https://www.draper.com)) for NASA; its software
+  engineering division was led by Margaret Hamilton. It is in the public
   domain.
+- **[Virtual AGC](https://www.ibiblio.org/apollo/)**, led by Ron Burkey with
+  Onno Hommes, Jim Lawton and Mike Stewart, rescued that software: gathering
+  scans of the surviving listings, transcribing them by hand, reconstructing versions
+  that didn't survive, and writing the assembler that turns them back into
+  ropes. Every rope Columbia runs comes from their work
+  ([GitHub](https://github.com/virtualagc/virtualagc); their
+  [acknowledgements](https://www.ibiblio.org/apollo/index.html#Acknowledgements)
+  credit the many volunteers, archivists and Apollo engineers who
+  contributed listings and transcriptions). See `rope/PROVENANCE.md`.
+- **[Project Apollo – NASSP](https://github.com/orbiternassp/NASSP)**, the
+  Apollo add-on for Martin Schweiger's
+  [Orbiter](https://github.com/orbitersim/orbiter) simulator, whose team
+  reconstructed each mission's computer pad loads from NASA documents.
+  Columbia's pad-load tables (`core/gnc/MissionPads.cpp`) are read from
+  their mission scenarios.
+- **NASA**: the mission reports and press kits behind the mission data
+  (dates, crews, timelines), via the
+  [NASA Technical Reports Server](https://ntrs.nasa.gov) and the
+  [NASA History Office](https://history.nasa.gov).
+- **[LROC](https://www.lroc.asu.edu)** (Lunar Reconnaissance Orbiter Camera,
+  Arizona State University / NASA) for the surveyed coordinates of the
+  landing sites.
+- **[Natural Earth](https://www.naturalearthdata.com)** for the coastlines
+  on the map, public domain.
+- **[Haiku](https://www.haiku-os.org)** and
+  **[HaikuPorts](https://github.com/haikuports/haikuports)**.
 
 ## License
 

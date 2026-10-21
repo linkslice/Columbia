@@ -2,7 +2,9 @@
 
 Every program here is public domain (work of the US government and its
 contractors, MIT Instrumentation Laboratory). Each `.bin` was assembled with
-yaYUL from the **Virtual AGC** sources (`github.com/virtualagc/virtualagc`);
+yaYUL from the **[Virtual AGC](https://www.ibiblio.org/apollo/)** sources
+([github.com/virtualagc/virtualagc](https://github.com/virtualagc/virtualagc)),
+the work of Ron Burkey and the project's many contributors;
 each `sym/*.sym` is the symbol table from the same assembly, which Columbia
 uses to find erasable locations by name (pad loads, the DSKY, diagnostics).
 
@@ -43,7 +45,7 @@ Checked against Virtual AGC revision `1b5d647` (2026-10-10).
 The popular GitHub mirror of the Apollo 11 code doesn't assemble with
 current yaYUL (Comanche055: 1 fatal error, Luminary099: 2,572), so it was not
 used. Virtual AGC's `Luminary099` is revision 1, the one that flew; it also
-matches Don Eyles's independently transcribed `AP11ROPE` listing.
+matches the separately transcribed `AP11ROPE` octal listing.
 
 ## Reproducing
 

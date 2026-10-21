@@ -10,6 +10,9 @@ elsewhere, none of which carries terms that conflict with the MIT license.
 Apollo Guidance Computer programs Colossus, Comanche, Artemis, Sundance and
 Luminary, written by the MIT Instrumentation Laboratory under contract to
 NASA. They are in the public domain.
+Credit for preserving them belongs to the
+[Virtual AGC](https://www.ibiblio.org/apollo/) project, led by Ron Burkey,
+and [its contributors](https://www.ibiblio.org/apollo/index.html#Acknowledgements).
 
 The images were assembled from the transcriptions and reconstructions of
 the [Virtual AGC](https://github.com/virtualagc/virtualagc) project; the
@@ -27,11 +30,21 @@ the CM and LM computers before each of Apollo 7-12 (DAP data, engine
 parameters, entry and landing targets). They are NASA mission data. The
 values were read, with `tools/extract_padloads.py`, from the computer
 memory images in the mission scenarios of the
-[NASSP](https://github.com/orbiternassp/NASSP) project (Project Apollo for
-Orbiter), whose authors reconstructed them from NASA documentation; the
+[Project Apollo – NASSP](https://github.com/orbiternassp/NASSP) project,
+the Apollo add-on for [Orbiter](https://github.com/orbitersim/orbiter), whose
+authors reconstructed them from NASA documentation; the
 names come from the flight programs' own listings. No NASSP source code or
 scenario files are included. NASSP itself is GPL-2.0; with thanks to its
 authors for the reconstruction work.
+
+## Mission and site data (public domain)
+
+Mission dates, crews and timelines in `core/flight/MissionSpec.cpp` are
+historical facts from NASA's mission reports and press kits
+([NTRS](https://ntrs.nasa.gov), [NASA History](https://history.nasa.gov)).
+Landing-site coordinates are the ones surveyed by the Lunar Reconnaissance
+Orbiter Camera ([LROC](https://www.lroc.asu.edu), Arizona State University /
+NASA).
 
 ## Coastlines (public domain)
 
